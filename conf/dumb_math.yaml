@@ -1,0 +1,36 @@
+defaults:
+    - base
+    - _self_
+
+actor:
+  # rollout_policy: pipelinerl.domains.math.generate_math_rollout
+  rollout_policy: pipelinerl.domains.math.generate_math_rollout_with_likelihood
+  system_prompt: Please reason step by step, and put your final answer within \boxed{}.
+  task_template: |-
+    {task}
+environment:
+  _target_: pipelinerl.domains.math.MathEnvironment
+dataset_loader: pipelinerl.domains.math.load_datasets
+train_dataset_names:
+  - deepscaler_preview
+  # - math_500
+  # - amc_2023
+test_dataset_names:
+  - aime_2024
+
+model_path: Qwen/Qwen2.5-3B-Instruct
+
+finetune:
+  seq_length: 8000
+  
+llm:
+  parameters:
+    max_tokens: 8000
+
+max_train_steps: 250
+
+rewards:
+  likelihood_weight: 0.1
+  vr_cli_weight: 0.1
+  vr_cli_only_on_incorrect: False
+  vr_cli_max_fraction_of_gap: 0.25

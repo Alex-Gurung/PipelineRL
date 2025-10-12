@@ -25,6 +25,7 @@ os.environ["TORCH_DISABLE_SHARE_RDZV_TCP_STORE"] = "1"
 os.environ["HF_DATASETS_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+os.environ["FLASHRL_CONFIG"] = "fp8"
 
 def _popen(
     cmd: list[str],
