@@ -27,8 +27,11 @@ llm:
   parameters:
     max_tokens: 8000
 
+vllm_config:
+  use_v1: true
+  
 max_train_steps: 250
 
 rewards:
   likelihood_weight: 0.1
-  vr_cli_only_on_incorrect: False
+  vr_cli_only_on_incorrect: false
