@@ -31,6 +31,4 @@ max_train_steps: 250
 
 rewards:
   likelihood_weight: 0.1
-  vr_cli_weight: 0.1
   vr_cli_only_on_incorrect: False
-  vr_cli_max_fraction_of_gap: 0.25
