@@ -228,19 +228,19 @@ async def generate_math_rollout_with_likelihood(
     try:
         gold_completion_token_ids = llm.tokenizer.encode(gold_answer.strip(), add_special_tokens=False)
     except Exception as exc:
-        logger.warning(f"Failed to tokenize gold answer '{gold_answer}': {exc}")
-        gold_completion_token_ids = []
+        raise RuntimeError(f"Failed to tokenize gold answer '{gold_answer}'") from exc
 
     gold_logprobs: list[float] | None = None
+    raw_gold_logprob_response = None
     if gold_completion_token_ids:
         try:
-            response = llm.get_batch_logprobs_token_ids(
+            raw_gold_logprob_response = llm.get_batch_logprobs_token_ids(
                 [context_token_ids],
                 [gold_completion_token_ids],
             )
             token_entries = []
-            if response:
-                first = response[0]
+            if raw_gold_logprob_response:
+                first = raw_gold_logprob_response[0]
                 if isinstance(first, dict):
                     token_entries = first.get("content", [])
                 else:
@@ -255,11 +255,13 @@ async def generate_math_rollout_with_likelihood(
                 likelihood_score = score.item()
                 likelihood_reward = rewards.likelihood_weight * likelihood_score
         except Exception as exc:
-            logger.warning(f"Failed to compute likelihood score: {exc}")
-            x = 1/0
-        else:
-            logger.warning(f"No gold logprobs found")
-            x = 1/0
+            raise RuntimeError("Failed to compute likelihood score from vLLM logprob API") from exc
+        if not gold_logprobs:
+            raise RuntimeError(
+                "No gold logprobs returned from vLLM logprob API. "
+                f"Context tokens: {len(context_token_ids)}, gold tokens: {len(gold_completion_token_ids)}, "
+                f"raw response: {raw_gold_logprob_response}"
+            )
 
     # Apply discount factor based on output length
     reward *= discount_factor**llm_call.output_length_tokens
