@@ -1,0 +1,13 @@
+defaults:
+  - base
+  - _self_
+
+attempts: 8
+rl:
+  policy_loss: ppo
+  epsilon: 0.2
+  # Dr. GRPO / RLOO: Remove optimization biases
+  divide_advantage_by_std: false   # Remove difficulty bias (no std normalization)
+  group_normalization: false        # Remove length bias (no per-sequence length normalization)
+  kl_coef: 0.0
+  filter_zero_advantage_groups: false

@@ -93,6 +93,15 @@ class RLConfig(BaseModel):
         default=False,
         description="Filter out groups where all advantages are zero during preprocessing",
     )
+    # DAPO options
+    clip_ratio_high: float | None = Field(
+        default=None,
+        description="Upper clip bound for asymmetric clipping (DAPO). If None, uses epsilon for symmetric clipping.",
+    )
+    dynamic_filtering_reward_range: tuple[float, float] | None = Field(
+        default=None,
+        description="Reward range [low, high] for DAPO-style filtering. If set, filters groups where average reward is outside this range.",
+    )
     value_loss_coef: float = Field(
         default=0.0,
         description="Coefficient for the value loss in the final loss",
@@ -269,7 +278,10 @@ def rl_step(
     match config.policy_loss:
         case "ppo":
             surr1 = ratio_new_old * log_p_weights
-            clamped_ratio = torch.clamp(ratio_new_old, 1 - config.epsilon, 1 + config.epsilon)
+            # DAPO: Asymmetric clipping if clip_ratio_high is specified
+            clip_low = config.epsilon
+            clip_high = config.clip_ratio_high if config.clip_ratio_high is not None else config.epsilon
+            clamped_ratio = torch.clamp(ratio_new_old, 1 - clip_low, 1 + clip_high)
             clamp_log_ratio_new_old_indicators = clamped_ratio != ratio_new_old
             surr2 = clamped_ratio * log_p_weights
             policy_loss = torch.min(surr1, surr2)

@@ -1,0 +1,19 @@
+defaults:
+  - base
+  - _self_
+
+rl:
+  policy_loss: ppo
+  # DAPO: Asymmetric clipping for better exploration
+  epsilon: 0.2              # Lower clip bound
+  clip_ratio_high: 0.3      # Higher upper bound promotes diversity
+
+  # DAPO: Standard GRPO advantage calculation
+  divide_advantage_by_std: true
+  group_normalization: true
+
+  # DAPO: Dynamic filtering by reward range (for binary rewards 0-1)
+  filter_zero_advantage_groups: false
+  dynamic_filtering_reward_range: [0.0, 1.0]
+
+  kl_coef: 0.01

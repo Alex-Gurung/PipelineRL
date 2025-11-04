@@ -284,43 +284,65 @@ def process_chunk(
         return
 
 
-def filter_zero_advantage_groups(dataset: list[dict], epsilon: float = 1e-6) -> tuple[list[dict], int]:
+def filter_groups_by_advantage_and_reward(
+    dataset: list[dict],
+    epsilon: float = 1e-6,
+    filter_zero_advantages: bool = False,
+    reward_range: tuple[float, float] | None = None
+) -> tuple[list[dict], int]:
     """
-    Filter out groups where all advantages are zero.
-    
+    Filter out groups by advantage and/or reward criteria.
+
     Args:
         dataset: List of dataset entries with group_id and advantages
         epsilon: Threshold for considering advantage non-zero
-        
+        filter_zero_advantages: If True, filter groups where all advantages are near zero
+        reward_range: If not None, also filter groups where average reward is outside [low, high]
+
     Returns:
         Tuple of (filtered_entries, num_filtered_out)
     """
     filtered_entries = []
     groups = {}
-    
+
     # Group entries by group_id
     for entry in dataset:
         group_id = entry["group_id"]
         if group_id not in groups:
             groups[group_id] = []
         groups[group_id].append(entry)
-    
+
     num_filtered_out = 0
-    
-    # Filter groups based on advantage values
+
+    # Apply filters additively
     for group_id, entries in groups.items():
-        has_non_zero_advantage = False
-        for entry in entries:
-            # advantages is a list, check if any absolute value is > epsilon
-            if any(abs(adv) > epsilon for adv in entry["advantages"]):
-                has_non_zero_advantage = True
-                break
-        
-        if has_non_zero_advantage:
+        should_keep = True
+
+        # Filter 1: Zero advantage filtering
+        if filter_zero_advantages:
+            has_non_zero_advantage = False
+            for entry in entries:
+                # advantages is a list, check if any absolute value is > epsilon
+                if any(abs(adv) > epsilon for adv in entry["advantages"]):
+                    has_non_zero_advantage = True
+                    break
+            if not has_non_zero_advantage:
+                should_keep = False
+
+        # Filter 2: Reward range filtering (DAPO-style)
+        if should_keep and reward_range is not None:
+            reward_low, reward_high = reward_range
+            rewards = [entry.get("rewards", [0])[0] for entry in entries]
+            if rewards:
+                avg_reward = sum(rewards) / len(rewards)
+                if not (reward_low <= avg_reward <= reward_high):
+                    should_keep = False
+
+        if should_keep:
             filtered_entries.extend(entries)
         else:
             num_filtered_out += len(entries)
-    
+
     return filtered_entries, num_filtered_out
 
 
@@ -506,11 +528,20 @@ def run_preprocessing_loop(
                         dataset = output_queue.get(timeout=0.001)
                         if isinstance(dataset, Exception):
                             raise dataset
-                        if rl_config.filter_zero_advantage_groups:
-                            dataset, num_filtered_out = filter_zero_advantage_groups(dataset)
+                        if rl_config.filter_zero_advantage_groups or rl_config.dynamic_filtering_reward_range is not None:
+                            dataset, num_filtered_out = filter_groups_by_advantage_and_reward(
+                                dataset,
+                                filter_zero_advantages=rl_config.filter_zero_advantage_groups,
+                                reward_range=rl_config.dynamic_filtering_reward_range
+                            )
                             total_filtered_out += num_filtered_out
                             if num_filtered_out > 0:
-                                logger.info(f"Filtered out {num_filtered_out} samples from groups with zero advantage.")
+                                filters_used = []
+                                if rl_config.filter_zero_advantage_groups:
+                                    filters_used.append("zero advantage")
+                                if rl_config.dynamic_filtering_reward_range is not None:
+                                    filters_used.append(f"reward range {rl_config.dynamic_filtering_reward_range}")
+                                logger.info(f"Filtered out {num_filtered_out} samples using: {', '.join(filters_used)}")
                         fetching_took += time.time() - start_fetching
                     except Empty:
                         pass

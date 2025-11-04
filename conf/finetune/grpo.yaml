@@ -5,3 +5,8 @@ defaults:
 attempts: 8
 rl:
   policy_loss: ppo
+  epsilon: 0.2
+  # Standard GRPO with biases
+  divide_advantage_by_std: true    # Normalize by std
+  group_normalization: true         # Normalize by sequence length
+  kl_coef: 0.01
