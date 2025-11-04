@@ -38,3 +38,4 @@ finetune:
     dynamic_filtering_reward_range: [0.75, 2.0]
     kl_coef: 0.0  # Disable KL for SciTrek
 
+model_path: Qwen/Qwen3-4B-Instruct-2507
