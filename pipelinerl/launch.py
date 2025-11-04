@@ -73,10 +73,15 @@ def validate_config(cfg: DictConfig):
 
 
 def run_ref_llm(cfg: DictConfig, preprocessor_llm_idx: int, local_idx: int, gpus: list[int], exp_dir: Path):
-    kwargs = cfg.vllm_config.vllm_kwargs
-    if kwargs["num-scheduler-steps"] > 1:
+    # Work on a shallow copy so we can safely tweak flags
+    kwargs = dict(cfg.vllm_config.vllm_kwargs or {})
+    # vLLM v1 does not accept --num-scheduler-steps; drop it if present
+    if cfg.vllm_config.use_v1 and "num-scheduler-steps" in kwargs:
+        kwargs.pop("num-scheduler-steps", None)
+    # For legacy v0 server keep it but clamp to 1 for ref server stability
+    if not cfg.vllm_config.use_v1 and kwargs.get("num-scheduler-steps", 1) > 1:
         kwargs["num-scheduler-steps"] = 1
-        logger.warning("Set num-scheduler-steps to 1 for reference vLLM")
+        logger.warning("Set num-scheduler-steps to 1 for reference vLLM (v0)")
     log_dir = exp_dir / f"ref_vllm_{preprocessor_llm_idx}"
     os.makedirs(log_dir, exist_ok=True)
 
@@ -152,7 +157,11 @@ def run_actor_llm(
 
     # Add vLLM kwargs as separate arguments
     if cfg.vllm_config.vllm_kwargs:
-        for k, v in cfg.vllm_config.vllm_kwargs.items():
+        # Filter invalid flags for vLLM v1
+        vllm_kwargs = dict(cfg.vllm_config.vllm_kwargs)
+        if cfg.vllm_config.use_v1 and "num-scheduler-steps" in vllm_kwargs:
+            vllm_kwargs.pop("num-scheduler-steps", None)
+        for k, v in vllm_kwargs.items():
             cmd.append(f"--{k}")
             if v not in [None, ""]:
                 cmd.append(str(v))
