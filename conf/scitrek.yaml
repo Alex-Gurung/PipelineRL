@@ -61,6 +61,6 @@ eval_every_n_versions: 16
 
 wandb:
   wandb_project_name: scitrek
-  wandb_group: grpo_scitrek
+  wandb_group: grpo_scitrekv0
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
