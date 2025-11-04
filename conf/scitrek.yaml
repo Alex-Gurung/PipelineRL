@@ -38,4 +38,9 @@ finetune:
     dynamic_filtering_reward_range: [0.75, 2.0]
     kl_coef: 0.0  # Disable KL for SciTrek
 
+vllm_config:
+  use_v1: true
+  vllm_kwargs:
+    trust-remote-code: ""  # required for many Qwen models
+
 model_path: Qwen/Qwen3-4B-Instruct-2507
