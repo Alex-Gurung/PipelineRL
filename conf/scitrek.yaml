@@ -33,6 +33,12 @@ llm:
     max_tokens: 3000
     temperature: 1.0
 
+test_llm:
+  parameters:
+    # Cap test-time generations to 3000 tokens too
+    max_tokens: 3000
+    temperature: 1.0
+
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 5000  # Input ~2000 + output 3000 tokens
@@ -46,7 +52,7 @@ finetune:
     dynamic_filtering_reward_range: [0.75, 2.0]
     kl_coef: 0.0  # Disable KL for SciTrek
 
-use_deepspeed: false
+use_deepspeed: true
 use_fsdp: false
 
 vllm_config:
@@ -60,7 +66,7 @@ vllm_config:
 eval_every_n_versions: 16
 
 wandb:
-  wandb_project_name: scitrek
+  wandb_project_name: scitrek_pipeline-rl
   wandb_group: grpo_scitrekv0
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
