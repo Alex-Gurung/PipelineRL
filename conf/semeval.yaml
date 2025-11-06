@@ -13,7 +13,7 @@ actor:
   # Encourage boxed final answer to match reward extractor
   # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
   # Match OpenRLHF-style concurrency: 2 vLLM engines * 64 = 128 rollouts
-  llm_max_rollouts: 64
+  llm_max_rollouts: 128
   rollout_workers: 2
 
 environment: null
@@ -47,10 +47,10 @@ test_llm:
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 2648  # Input ~600 + output 2048 tokens
-  train_batch_size: 2
-  gradient_accumulation_passes: 64
+  train_batch_size: 4
+  gradient_accumulation_passes: 128
   learning_rate: 5e-7
-  save_checkpoint_steps: 16
+  save_checkpoint_steps: 32
   rl:
     # SemEval-specific DAPO settings (rewards in range [-20, -0.2], negative squared distance)
     clip_ratio_high: 0.3
@@ -66,10 +66,10 @@ vllm_config:
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
     max-model-len: 2648
-    gpu-memory-utilization: 0.5
+    gpu-memory-utilization: 0.9
     enable-prefix-caching: ""
 
-eval_every_n_versions: 16
+eval_every_n_versions: 32
 
 wandb:
   wandb_project_name: semeval_pipelinerl
