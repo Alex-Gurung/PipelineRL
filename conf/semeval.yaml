@@ -1,0 +1,78 @@
+# python -m pipelinerl.launch \
+#   --config-name scitrek \
+#   model_path=Qwen/Qwen3-4B-Instruct-2507 \
+#   dataset_loader_params.data_dir=/mnt/disk/sci/scitrek_data finetune.keep_intermediate_checkpoints=false
+
+defaults:
+  - base
+  - finetune/dapo
+  - _self_
+
+actor:
+  rollout_policy: pipelinerl.domains.semeval.rollouts.generate_semeval_rollout
+  # Encourage boxed final answer to match reward extractor
+  # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
+  # Match OpenRLHF-style concurrency: 2 vLLM engines * 64 = 128 rollouts
+  llm_max_rollouts: 64
+  rollout_workers: 2
+
+environment: null
+
+dataset_loader: pipelinerl.domains.semeval.load_datasets.load_semeval
+dataset_loader_params:
+  data_dir: null      # e.g., /mnt/disk/semeval/prompts
+  train_file: null    # optional explicit override
+  val_file: null      # optional explicit override
+
+train_dataset_names:
+  - train
+
+test_dataset_names:
+  - val
+
+
+attempts: 16
+
+llm:
+  parameters:
+    max_tokens: 2048
+    temperature: 1.0
+
+test_llm:
+  parameters:
+    # Cap test-time generations to 2048 tokens too
+    max_tokens: 2048
+    temperature: 1.0
+
+finetune:
+  # Use DDP by default (no DeepSpeed, no FSDP)
+  seq_length: 2648  # Input ~600 + output 2048 tokens
+  train_batch_size: 2
+  gradient_accumulation_passes: 64
+  learning_rate: 5e-7
+  save_checkpoint_steps: 16
+  rl:
+    # SemEval-specific DAPO settings (rewards in range [-20, -0.2], negative squared distance)
+    clip_ratio_high: 0.3
+    dynamic_filtering_reward_range: [-20, -0.2]
+    kl_coef: 0.0  # Disable KL for SemEval
+
+use_deepspeed: true
+use_fsdp: false
+  # use_fsdp: true 
+
+vllm_config:
+  use_v1: true
+  vllm_kwargs:
+    trust-remote-code: ""  # required for many Qwen models
+    max-model-len: 2648
+    gpu-memory-utilization: 0.5
+    enable-prefix-caching: ""
+
+eval_every_n_versions: 16
+
+wandb:
+  wandb_project_name: semeval_pipelinerl
+  wandb_group: grpo_semevalv0
+
+model_path: Qwen/Qwen3-4B-Instruct-2507
