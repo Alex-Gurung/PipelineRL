@@ -73,8 +73,13 @@ def validate_config(cfg: DictConfig):
 
 
 def run_ref_llm(cfg: DictConfig, preprocessor_llm_idx: int, local_idx: int, gpus: list[int], exp_dir: Path):
-    # Work on a shallow copy so we can safely tweak flags
-    kwargs = dict(cfg.vllm_config.vllm_kwargs or {})
+    # Use ref_vllm_kwargs if provided, otherwise fall back to vllm_kwargs
+    # This allows separate max-model-len for reference model (e.g., for long-prompt training)
+    if hasattr(cfg.vllm_config, 'ref_vllm_kwargs') and cfg.vllm_config.ref_vllm_kwargs:
+        kwargs = dict(cfg.vllm_config.ref_vllm_kwargs)
+    else:
+        kwargs = dict(cfg.vllm_config.vllm_kwargs or {})
+
     # vLLM v1 does not accept --num-scheduler-steps; drop it if present
     if cfg.vllm_config.use_v1 and "num-scheduler-steps" in kwargs:
         kwargs.pop("num-scheduler-steps", None)

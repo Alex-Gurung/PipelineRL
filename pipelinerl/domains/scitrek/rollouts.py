@@ -105,6 +105,10 @@ async def generate_scitrek_rollout(
     trace = make_training_text(llm, llm_call)
     trace.reward = reward
 
+    # Store long prompts in metadata if provided (for multi-prompt training)
+    if "messages_long" in problem:
+        trace.metadata["messages_long"] = problem["messages_long"]
+
     metrics = BaseMetrics(
         reward=reward,
         success=bool(em == 1.0),

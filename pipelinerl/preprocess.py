@@ -37,7 +37,7 @@ from pipelinerl.finetune.checkpoints import (
     load_training_checkpoint,
 )
 from pipelinerl.finetune.types import PipelineBatchEncoding, TrainingMetrics
-from pipelinerl.finetune.data import preprocess_fn, collate, collate_packed
+from pipelinerl.finetune.data import preprocess_fn, collate, collate_packed, MASKED_TOKEN_ID
 from pipelinerl.finetune.utils import create_sentinel_batch
 from pipelinerl.finetune.rl import RL_DATA_COLUMNS, RLConfig, populate_rl_data
 import traceback
@@ -89,6 +89,143 @@ def batch_annotate_traces_with_ref_logprobs(llm: TrainableLLM, traces: List[dict
         assert len(trace["ref_logprobs"]) == len(trace["logprobs"]), (
             f"{len(trace['ref_logprobs'])} != {len(trace['logprobs'])}"
         )
+
+
+def batch_annotate_traces_with_long_prompt_ref_logprobs(llm: TrainableLLM, traces: List[dict]):
+    """Compute reference model log-probs for long prompts."""
+    logger.info(f"Annotating {len(traces)} samples with long-prompt ref logprobs")
+
+    long_prompt_token_ids = []
+    completion_token_ids = []
+
+    for trace in traces:
+        # Get long prompt tokens from metadata
+        long_input_ids = trace["metadata"]["long_prompt_input_ids"]
+        # Completion length is same as short prompt
+        completion_length = len(trace["logprobs"])
+
+        long_prompt_token_ids.append(long_input_ids[:-completion_length])
+        completion_token_ids.append(long_input_ids[-completion_length:])
+
+    try:
+        all_ref_logprobs = llm.get_batch_logprobs_token_ids(long_prompt_token_ids, completion_token_ids)
+    except Exception as e:
+        logger.error(f"Failed to get long-prompt ref logprobs: {e}")
+        assert (response := getattr(e, "response", None))
+        logger.error(f"Response content: {response.text}")
+        raise e
+
+    for trace, ref_logprobs in zip(traces, all_ref_logprobs):
+        trace["metadata"]["long_prompt_ref_logprobs"] = [c["logprob"] for c in ref_logprobs["content"]]
+        assert len(trace["metadata"]["long_prompt_ref_logprobs"]) == len(trace["logprobs"]), (
+            f"{len(trace['metadata']['long_prompt_ref_logprobs'])} != {len(trace['logprobs'])}"
+        )
+
+
+def process_long_prompt_metadata(
+    traces: list[dict],
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    seq_length: int,
+    rl_config,
+) -> None:
+    """
+    Process long prompts and store tokenized versions in metadata for multi-prompt training.
+
+    This function tokenizes long-form prompts and stores the results in trace metadata,
+    enabling importance sampling corrections and knowledge distillation across different
+    prompt formats during training.
+
+    Args:
+        traces: List of training traces (modified in-place)
+        tokenizer: Tokenizer for processing text
+        seq_length: Maximum sequence length for short prompts (used as fallback)
+        rl_config: RL configuration containing long-prompt feature flags and long_prompt_seq_length
+
+    Raises:
+        ValueError: If long-prompt features are enabled but messages_long is missing
+    """
+    # Check if any long-prompt features are enabled
+    if not (rl_config.enable_long_prompt_is or
+            rl_config.enable_long_prompt_rl or
+            rl_config.enable_reasoning_distillation):
+        return
+
+    logger.info(f"Processing long prompts for {len(traces)} traces")
+
+    for trace in traces:
+        # Validate that messages_long exists
+        if "messages_long" not in trace.get("metadata", {}):
+            raise ValueError(
+                f"Long-prompt features enabled (enable_long_prompt_is={rl_config.enable_long_prompt_is}, "
+                f"enable_long_prompt_rl={rl_config.enable_long_prompt_rl}, "
+                f"enable_reasoning_distillation={rl_config.enable_reasoning_distillation}) "
+                f"but 'messages_long' not found in trace metadata. "
+                f"Please ensure your dataset includes 'messages_long' field."
+            )
+
+        messages_long = trace["metadata"]["messages_long"]
+
+        # Apply chat template to get long-form text
+        # This matches what's done during rollout generation
+        long_text = tokenizer.apply_chat_template(
+            messages_long,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # Get the completion text (same as short prompt)
+        completion_length = trace.get("n_predicted", 0)
+        if completion_length == 0:
+            logger.warning(f"Trace has no completion (n_predicted=0), skipping long prompt processing")
+            continue
+
+        # Extract completion from the original text
+        completion_text = trace["text"][-completion_length:]
+
+        # Combine long prompt with same completion
+        long_full_text = long_text + completion_text
+
+        # Use long_prompt_seq_length if configured, otherwise fall back to seq_length
+        effective_seq_length = (
+            rl_config.long_prompt_seq_length if rl_config.long_prompt_seq_length is not None
+            else seq_length
+        )
+
+        # Tokenize the full long-prompt text
+        tokenizer_output = tokenizer(
+            long_full_text,
+            return_offsets_mapping=True,
+            max_length=effective_seq_length,
+            truncation=True,
+        )
+
+        # Create labels (mask prompt tokens, keep completion tokens)
+        # We need to find where the completion starts in the tokenized output
+        # Tokenize just the long prompt to find its length
+        long_prompt_only = tokenizer(
+            long_text,
+            return_offsets_mapping=False,
+            max_length=seq_length,
+            truncation=True,
+        )
+        prompt_token_length = len(long_prompt_only["input_ids"])
+
+        # Create labels: -100 for prompt tokens, actual token IDs for completion
+        long_labels = (
+            [MASKED_TOKEN_ID] * prompt_token_length +
+            tokenizer_output["input_ids"][prompt_token_length:]
+        )
+
+        # Store in metadata with same structure as short prompt
+        trace["metadata"]["long_prompt_input_ids"] = tokenizer_output["input_ids"]
+        trace["metadata"]["long_prompt_attention_mask"] = tokenizer_output["attention_mask"]
+        trace["metadata"]["long_prompt_labels"] = long_labels
+
+        # Also store position_ids if needed for packed sequences
+        if "position_ids" in trace:
+            trace["metadata"]["long_prompt_position_ids"] = list(range(len(tokenizer_output["input_ids"])))
+
+    logger.info(f"Completed long prompt processing for {len(traces)} traces")
 
 
 def replace_oov_tokens_with_the(data: list[dict], tokenizer: transformers.PreTrainedTokenizerBase) -> list[dict]:
@@ -147,6 +284,20 @@ def preprocess_dataset(
         for entry in data:
             entry["ref_logprobs"] = entry["logprobs"]
 
+    # Process long prompts if any long-prompt features are enabled
+    if rl_config and (rl_config.enable_long_prompt_is or
+                      rl_config.enable_long_prompt_rl or
+                      rl_config.enable_reasoning_distillation):
+        process_long_prompt_metadata(data, tokenizer, seq_length, rl_config)
+
+        # Compute ref logprobs for long prompts
+        if llm is not None:
+            batch_annotate_traces_with_long_prompt_ref_logprobs(llm, data)
+        else:
+            # If no reference model, copy old logprobs (same as short prompt)
+            for entry in data:
+                entry["metadata"]["long_prompt_ref_logprobs"] = entry["logprobs"]
+
     # now without Huggingface datasets
     dataset = []
     for i in range(len(data)):
@@ -158,6 +309,16 @@ def preprocess_dataset(
         entry["model_version"] = entry["metadata"]["model_version"]
         entry["rollout_index"] = entry["metadata"]["rollout_index"]
         entry["step_index"] = entry["metadata"]["step_index"]
+
+        # Extract long-prompt fields from metadata if present
+        if "long_prompt_input_ids" in entry["metadata"]:
+            entry["long_prompt_input_ids"] = entry["metadata"]["long_prompt_input_ids"]
+            entry["long_prompt_attention_mask"] = entry["metadata"]["long_prompt_attention_mask"]
+            entry["long_prompt_labels"] = entry["metadata"]["long_prompt_labels"]
+            if "long_prompt_position_ids" in entry["metadata"]:
+                entry["long_prompt_position_ids"] = entry["metadata"]["long_prompt_position_ids"]
+            if "long_prompt_ref_logprobs" in entry["metadata"]:
+                entry["long_prompt_ref_logprobs"] = entry["metadata"]["long_prompt_ref_logprobs"]
     if not isinstance(tokenizer.eos_token_id, int):
         raise ValueError(f"Tokenizer {tokenizer} does not have an eos_token_id")
     dataset = populate_rl_data(dataset=dataset, eos_token_id=tokenizer.eos_token_id, config=rl_config)

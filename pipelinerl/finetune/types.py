@@ -71,8 +71,17 @@ class PipelineBatchEncoding(BaseModel):
     # Visual feature fields (optional, for multimodal models)
     pixel_values: torch.FloatTensor | None = None
     image_grid_thw: torch.LongTensor | None = None
-    
-    @field_validator('input_ids', 'attention_mask', 'labels', 'position_ids', 'image_grid_thw', mode='before')
+
+    # Long-prompt training fields (optional, for multi-prompt training)
+    long_prompt_input_ids: torch.LongTensor | None = None
+    long_prompt_attention_mask: torch.LongTensor | None = None
+    long_prompt_labels: torch.LongTensor | None = None
+    long_prompt_position_ids: torch.LongTensor | None = None
+    long_prompt_ref_logprobs: torch.FloatTensor | None = None
+
+    @field_validator('input_ids', 'attention_mask', 'labels', 'position_ids', 'image_grid_thw',
+                     'long_prompt_input_ids', 'long_prompt_attention_mask', 'long_prompt_labels',
+                     'long_prompt_position_ids', mode='before')
     @classmethod
     def convert_to_long_tensor(cls, v: List[int] | torch.Tensor | None) -> torch.LongTensor | None:
         """Handle initialization of long tensors from different types."""
@@ -95,7 +104,7 @@ class PipelineBatchEncoding(BaseModel):
         return torch.tensor(v, dtype=torch.int)
     
     # TODO: am i needed?
-    @field_validator('rewards', 'advantages', 'ref_logprobs', 'old_logprobs', 'group_tokens', 'num_labels', 'overflow', 'pixel_values', mode='before')
+    @field_validator('rewards', 'advantages', 'ref_logprobs', 'old_logprobs', 'group_tokens', 'num_labels', 'overflow', 'pixel_values', 'long_prompt_ref_logprobs', mode='before')
     @classmethod
     def convert_to_float_tensor(cls, v: List[float] | torch.Tensor | None) -> torch.FloatTensor | None:
         """Handle initialization of float tensors from different types."""

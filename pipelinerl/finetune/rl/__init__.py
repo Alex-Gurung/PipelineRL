@@ -32,6 +32,7 @@ RL_DATA_COLUMNS = [
     "advantages",
     "old_logprobs",
     "ref_logprobs",
+    "long_prompt_ref_logprobs",
 ]
 
 
@@ -101,6 +102,72 @@ class RLConfig(BaseModel):
     dynamic_filtering_reward_range: tuple[float, float] | None = Field(
         default=None,
         description="Reward range [low, high] for DAPO-style filtering. If set, filters groups where average reward is outside this range.",
+    )
+    # Multi-prompt training options
+    enable_long_prompt_is: bool = Field(
+        default=False,
+        description=(
+            "Enable importance sampling correction to train on long prompts while sampling from short prompts. "
+            "Applies weight π_ref(a|long)/π_ref(a|short) to correct the distribution mismatch. "
+            "Use this when you want a single RL objective but need to correct for the prompt format difference. "
+            "Requires 'messages_long' field in dataset."
+        ),
+    )
+    enable_long_prompt_rl: bool = Field(
+        default=False,
+        description=(
+            "Add a separate RL objective for long prompts with its own importance sampling correction. "
+            "This creates a dual objective: L = (1-w)*L_short + w*L_long where w=long_prompt_rl_weight. "
+            "Use this to explicitly optimize performance on both prompt formats. "
+            "Can be combined with enable_long_prompt_is for a fully corrected dual objective. "
+            "Requires 'messages_long' field in dataset."
+        ),
+    )
+    long_prompt_rl_weight: float = Field(
+        default=0.5,
+        description=(
+            "Weight for the long-prompt RL objective when enable_long_prompt_rl=True. "
+            "Final loss = (1-weight)*loss_short + weight*loss_long. "
+            "Set to 0.5 for equal weighting, higher values prioritize long-prompt performance."
+        ),
+    )
+    long_prompt_seq_length: int | None = Field(
+        default=None,
+        description=(
+            "Maximum sequence length for long prompts during preprocessing. "
+            "If None, uses the same seq_length as short prompts. "
+            "Set this to a higher value (e.g., 120000) when long prompts are significantly longer than short prompts "
+            "to avoid excessive truncation while keeping short prompts memory efficient. "
+            "Only applies when multi-prompt training is enabled."
+        ),
+    )
+    # Knowledge distillation options
+    enable_reasoning_distillation: bool = Field(
+        default=False,
+        description=(
+            "Add KL divergence loss to match π_old(·|short) with π_new(·|long). "
+            "This keeps the model's reasoning consistent across different prompt formats by minimizing "
+            "KL(π_old(·|short) || π_new(·|long)). Helps prevent the model from 'forgetting' the short-prompt "
+            "reasoning style when training on long prompts. "
+            "Requires 'messages_long' field in dataset."
+        ),
+    )
+    distillation_coef: float = Field(
+        default=0.1,
+        description=(
+            "Weight coefficient for the knowledge distillation loss term. "
+            "Final loss includes: distillation_coef * KL(π_old(·|short) || π_new(·|long)). "
+            "Higher values more strongly enforce consistency between prompt formats."
+        ),
+    )
+    distillation_top_k: int | None = Field(
+        default=None,
+        description=(
+            "If set, only match the top-k logits when computing KL divergence for distillation. "
+            "This filters out low-probability tokens that may add noise to the KD loss. "
+            "None means use the full distribution over all vocabulary tokens. "
+            "Typical values: 10-50 for focused distillation."
+        ),
     )
     value_loss_coef: float = Field(
         default=0.0,
@@ -205,18 +272,67 @@ def rl_step(
     
     outputs = model(**model_inputs)
 
-    # compute log probs and entropy
-    logits = outputs.logits[:, :-1, :]
-    logits = logits / config.temperature
-    logprobs = F.log_softmax(logits, dim=-1)
-    probs = F.softmax(logits, dim=-1)
-    entropy = -(probs * logprobs).sum(dim=-1)
-    del logits, probs
-    
-    # get log probs for actual tokens
-    new_logprobs = torch.gather(logprobs, dim=2, index=batch.input_ids[:, 1:].unsqueeze(2)).squeeze(2)
+    # compute log probs and entropy for short prompts
+    logits_short = outputs.logits[:, :-1, :] / config.temperature
+    logprobs_short = F.log_softmax(logits_short, dim=-1)
+    probs_short = F.softmax(logits_short, dim=-1)
+    entropy = -(probs_short * logprobs_short).sum(dim=-1)
+
+    # get log probs for actual tokens (short context)
+    new_logprobs = torch.gather(logprobs_short, dim=2, index=batch.input_ids[:, 1:].unsqueeze(2)).squeeze(2)
     assert torch.isfinite(new_logprobs).all(), f"new_logprobs is not finite: {new_logprobs}"
-    del logprobs
+
+    # Clean up tensors we don't need to keep
+    if not config.enable_reasoning_distillation:
+        del logits_short, logprobs_short
+    del probs_short
+
+    # Long-prompt forward pass if any long-prompt features are enabled
+    new_logprobs_long = None
+    logits_long = None
+    long_prompt_ref_logprobs = None
+
+    if (config.enable_long_prompt_is or config.enable_long_prompt_rl or config.enable_reasoning_distillation):
+        if batch.long_prompt_input_ids is not None:
+            # Forward pass with long prompts
+            model_inputs_long = {
+                "input_ids": batch.long_prompt_input_ids,
+                "attention_mask": batch.long_prompt_attention_mask,
+                "labels": batch.long_prompt_labels,
+            }
+            if batch.is_packed and batch.long_prompt_position_ids is not None:
+                model_inputs_long["position_ids"] = batch.long_prompt_position_ids
+
+            # Add visual features if present
+            if hasattr(batch, 'pixel_values') and batch.pixel_values is not None:
+                model_inputs_long["pixel_values"] = batch.pixel_values
+            if hasattr(batch, 'image_grid_thw') and batch.image_grid_thw is not None:
+                model_inputs_long["image_grid_thw"] = batch.image_grid_thw
+
+            outputs_long = model(**model_inputs_long)
+
+            # Compute logits and log-probs for long context
+            logits_long = outputs_long.logits[:, :-1, :] / config.temperature
+            logprobs_long = F.log_softmax(logits_long, dim=-1)
+
+            # Extract log-probs for actual tokens (long context)
+            new_logprobs_long = torch.gather(
+                logprobs_long, dim=2, index=batch.long_prompt_input_ids[:, 1:].unsqueeze(2)
+            ).squeeze(2)
+            assert torch.isfinite(new_logprobs_long).all(), f"new_logprobs_long is not finite: {new_logprobs_long}"
+
+            # Get long-prompt ref logprobs if available
+            if batch.long_prompt_ref_logprobs is not None:
+                long_prompt_ref_logprobs = batch.long_prompt_ref_logprobs[:, 1:]
+
+            # Clean up if not needed for KD
+            if not config.enable_reasoning_distillation:
+                del logits_long, logprobs_long
+        else:
+            logger.warning(
+                "Long-prompt features enabled but batch.long_prompt_input_ids is None. "
+                "Skipping long-prompt forward pass."
+            )
 
     # get shifted values and compute ratios
     rewards = batch.rewards[:, 1:]
@@ -299,9 +415,57 @@ def rl_step(
     assert loss.shape == tokens_weights.shape, (
         f"Loss shape {loss.shape} does not match example weights shape {tokens_weights.shape}"
     )
+
+    # Apply importance sampling correction if enabled
+    if config.enable_long_prompt_is and new_logprobs_long is not None:
+        # IS weight: π_new(a|long) / π_new(a|short)
+        log_ratio_long_short = new_logprobs_long - new_logprobs
+        is_weight = torch.exp(log_ratio_long_short)
+        loss = loss * is_weight
+
     loss = loss * tokens_weights  # 1 x (BxL) x 1
 
     policy_loss_total = -sum_sum(loss, masks_shifted, segments)
+
+    # Add long-prompt RL objective if enabled
+    if config.enable_long_prompt_rl and new_logprobs_long is not None:
+        # Compute policy loss for long prompts (using same algorithm)
+        log_ratio_new_old_long = new_logprobs_long - old_logprobs
+        ratio_new_old_long = torch.exp(log_ratio_new_old_long)
+
+        # KL penalty for long prompts
+        if long_prompt_ref_logprobs is not None:
+            log_ratio_ref_new_long = long_prompt_ref_logprobs - new_logprobs_long
+            log_ratio_ref_new_long_clamp = torch.clamp(
+                log_ratio_ref_new_long,
+                min=-config.clamp_log_ratio_ref_new_value,
+                max=config.clamp_log_ratio_ref_new_value,
+            )
+            approx_kl_long = torch.exp(log_ratio_ref_new_long_clamp) - log_ratio_ref_new_long_clamp - 1
+        else:
+            approx_kl_long = torch.zeros_like(new_logprobs_long)
+
+        # Policy loss for long prompts
+        match config.policy_loss:
+            case "ppo":
+                surr1_long = ratio_new_old_long * log_p_weights
+                clamped_ratio_long = torch.clamp(ratio_new_old_long, 1 - clip_low, 1 + clip_high)
+                surr2_long = clamped_ratio_long * log_p_weights
+                policy_loss_long = torch.min(surr1_long, surr2_long)
+            case "reinforce":
+                ratio_new_old_long_clamped = torch.clamp(ratio_new_old_long, 0, 1 + config.epsilon)
+                policy_loss_long = new_logprobs_long * log_p_weights * ratio_new_old_long_clamped.detach()
+            case _:
+                raise ValueError(f"Unknown algorithm {config.policy_loss}")
+
+        # Combine loss components for long prompts
+        loss_long = policy_loss_long - kl_coef * approx_kl_long + entropy_bonus_coef * entropy
+        loss_long = loss_long * tokens_weights
+        policy_loss_long_total = -sum_sum(loss_long, masks_shifted, segments)
+
+        # Mix: (1-w)*loss_short + w*loss_long
+        w = config.long_prompt_rl_weight
+        policy_loss_total = (1 - w) * policy_loss_total + w * policy_loss_long_total
     
     if has_value_head:
         # Get the value predictions
@@ -320,6 +484,22 @@ def rl_step(
         final_loss = policy_loss_total + config.value_loss_coef * value_loss
     else:
         final_loss = policy_loss_total
+
+    # Add knowledge distillation loss if enabled
+    if config.enable_reasoning_distillation and new_logprobs_long is not None:
+        # Use Schulman approximation by default (fast), unless user specifies top_k
+        use_schulman = config.distillation_top_k is None
+        kd_loss = compute_kd_loss(
+            logits_short=logits_short,
+            logits_long=logits_long,
+            logprobs_short=new_logprobs,
+            logprobs_long=new_logprobs_long,
+            masks=masks_shifted,
+            use_schulman=use_schulman,
+            top_k=config.distillation_top_k,
+            segments=segments,
+        )
+        final_loss = final_loss + config.distillation_coef * kd_loss
 
     # ensure loss is valid
     assert torch.isfinite(final_loss), f"Non-finite loss detected: {final_loss}"
@@ -387,6 +567,71 @@ def rl_step(
         ).item()
 
     return final_loss, stats
+
+
+def compute_kd_loss(
+    logits_short: torch.Tensor,
+    logits_long: torch.Tensor,
+    logprobs_short: torch.Tensor,
+    logprobs_long: torch.Tensor,
+    masks: torch.Tensor,
+    use_schulman: bool = True,
+    top_k: int | None = None,
+    segments: list[tuple[int, int]] | None = None,
+) -> torch.Tensor:
+    """
+    Compute knowledge distillation loss KL(π_short || π_long) to keep reasoning consistent
+    across different prompt formats.
+
+    Supports three modes:
+    1. Schulman approximation (default): Fast approximation using selected token log-probs
+    2. Top-k KL: Full KL but only over top-k tokens to reduce noise
+    3. Full vocab KL: Full KL divergence over entire vocabulary
+
+    Args:
+        logits_short: Logits from short context [B, L, vocab_size]
+        logits_long: Logits from long context [B, L, vocab_size]
+        logprobs_short: Log-probs of selected tokens from short context [B, L]
+        logprobs_long: Log-probs of selected tokens from long context [B, L]
+        masks: Token masks [B, L]
+        use_schulman: If True, use Schulman approximation (fast, default).
+                      If False, compute full KL over logits.
+        top_k: If set and use_schulman=False, only compute KL over top-k tokens.
+               Ignored if use_schulman=True.
+        segments: Optional sequence boundaries for packed sequences
+
+    Returns:
+        Scalar KL divergence loss
+    """
+    if use_schulman:
+        # Schulman approximation: KL ≈ exp(log_ratio) - log_ratio - 1
+        # where log_ratio = log(π_short) - log(π_long)
+        log_ratio = logprobs_short - logprobs_long
+        kl = torch.exp(log_ratio) - log_ratio - 1  # [B, L]
+    elif top_k is not None:
+        # Top-k KL: Renormalize within top-k tokens from short context
+        topk_values_short, topk_indices = torch.topk(logits_short, top_k, dim=-1)  # [B, L, k]
+        logits_long_topk = torch.gather(logits_long, dim=-1, index=topk_indices)  # [B, L, k]
+
+        log_p_topk = F.log_softmax(topk_values_short, dim=-1)
+        log_q_topk = F.log_softmax(logits_long_topk, dim=-1)
+
+        kl = F.kl_div(log_q_topk, log_p_topk, log_target=True, reduction='none').sum(dim=-1)  # [B, L]
+    else:
+        # Full vocabulary KL: KL(P || Q) = sum(P * (log_P - log_Q))
+        log_p = F.log_softmax(logits_short, dim=-1)
+        log_q = F.log_softmax(logits_long, dim=-1)
+        # F.kl_div expects log_q as input, log_p as target
+        kl = F.kl_div(log_q, log_p, log_target=True, reduction='none').sum(dim=-1)  # [B, L]
+
+    # Apply masks and reduce
+    if segments is not None:
+        # Packed sequences: use segment-aware reduction
+        return sum_sum(kl, masks, segments)
+    else:
+        # Standard sequences
+        kl_masked = kl * masks
+        return kl_masked.sum() / masks.sum()
 
 
 def populate_rl_data(dataset: list[dict[str, Any]], eos_token_id: int, config: RLConfig) -> list[dict[str, Any]]:

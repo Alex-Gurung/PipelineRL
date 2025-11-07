@@ -57,6 +57,29 @@ finetune:
     dynamic_filtering_reward_range: [0.75, 2.0]
     kl_coef: 0.0  # Disable KL for SciTrek
 
+    # === Multi-prompt training settings ===
+    # Requires dataset with both 'messages' (short/metadata) and 'messages_long' (full articles)
+
+    # Dual RL objective: compute separate losses for short and long prompts
+    # Final loss = (1-w)*loss_short + w*loss_long
+    enable_long_prompt_rl: true
+    long_prompt_rl_weight: 0.5  # Equal weighting between short and long objectives
+
+    # Separate sequence length for long prompts (short prompts use seq_length above)
+    # Long prompts are ~115k tokens, so set to 120k to allow prompt + 3k completion + buffer
+    long_prompt_seq_length: 120000
+
+    # Importance sampling correction: π_new(a|long) / π_new(a|short)
+    # Corrects distribution mismatch when sampling from short but optimizing for long
+    # (can be used with or without enable_long_prompt_rl)
+    enable_long_prompt_is: false
+
+    # Knowledge distillation: Keep reasoning consistent across prompt formats
+    # Minimizes KL(π_new(·|short) || π_new(·|long))
+    enable_reasoning_distillation: false
+    distillation_coef: 0.1
+    distillation_top_k: null  # null = fast Schulman approximation, set int for top-k KL
+
 use_deepspeed: true
 use_fsdp: false
   # use_fsdp: true 
@@ -65,13 +88,18 @@ vllm_config:
   use_v1: true
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
-    max-model-len: 5000
+    max-model-len: 5000  # Actor vLLM only needs short prompts
+    gpu-memory-utilization: 0.9
+  ref_vllm_kwargs:
+    # Reference model needs to support long prompts for computing ref logprobs
+    trust-remote-code: ""
+    max-model-len: 120000  # Must support long_prompt_seq_length
     gpu-memory-utilization: 0.9
 
 eval_every_n_versions: 16
 
 wandb:
-  wandb_project_name: scitrek_pipelinerl
-  wandb_group: grpo_scitrekv0
+  wandb_project_name: scitrek_multiprompt_pipelinerl
+  wandb_group: grpo_scitrek_multiprompt_v0
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
