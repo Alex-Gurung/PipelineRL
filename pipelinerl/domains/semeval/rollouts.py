@@ -26,7 +26,8 @@ def get_distance(generation, reference):
         return 25
     ref_score = float(reference)
     distance = (gen_score-ref_score) ** 2
-
+    if gen_score < 1 or gen_score > 5:
+        distance = 25
     return distance
 
 

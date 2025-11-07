@@ -47,14 +47,14 @@ test_llm:
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 2648  # Input ~600 + output 2048 tokens
-  train_batch_size: 2
-  gradient_accumulation_passes: 64
+  train_batch_size: 4
+  gradient_accumulation_passes: 32
   learning_rate: 5e-7
-  save_checkpoint_steps: 16
+  save_checkpoint_steps: 64
   rl:
     # SemEval-specific DAPO settings (rewards in range [-20, -0.2], negative squared distance)
     clip_ratio_high: 0.3
-    dynamic_filtering_reward_range: [-20, -0.2]
+    dynamic_filtering_reward_range: [-20.0, -0.2]
     kl_coef: 0.0  # Disable KL for SemEval
 
 use_deepspeed: true
@@ -66,13 +66,13 @@ vllm_config:
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
     max-model-len: 2648
-    gpu-memory-utilization: 0.5
+    gpu-memory-utilization: 0.9
     enable-prefix-caching: ""
 
-eval_every_n_versions: 16
+eval_every_n_versions: 64
 
 wandb:
   wandb_project_name: semeval_pipelinerl
-  wandb_group: grpo_semevalv0
+  wandb_group: grpo_semevalv1
 
-model_path: Qwen/Qwen3-4B-Instruct-2507
+model_path: Qwen/Qwen2.5-7B-Instruct 
