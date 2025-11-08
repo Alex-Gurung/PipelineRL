@@ -16,7 +16,8 @@ from transformers import (
     AutoProcessor,
     BitsAndBytesConfig,
 )
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
+from liger_kernel.transformers import AutoLigerKernelForCausalLM  # optional dependency
 from transformers.models.auto.modeling_auto import _BaseAutoModelClass
 
 from .context import get_accelerator, logger
@@ -123,12 +124,18 @@ def load_model(args, model_class, current_dir):
 
     logger.info(f"Loading args: {loading_args}")
 
-    # Apply Liger kernels for memory-efficient training
+    # Apply Liger kernel if requested and available
+    model = None
     if model_class == "causal-language-modeling":
-        logger.info("Applying Liger kernels for memory-efficient training")
-        AutoLigerKernelForCausalLM.from_pretrained(model_to_load, **loading_args)
+        logger.info("Loading model with Liger kernel enabled (causal-language-modeling)")
+        loading_args["fused_linear_cross_entropy"] = False
+        model = AutoLigerKernelForCausalLM.from_pretrained(model_to_load, **loading_args)
+    elif model_class == "causal-language-modeling-with-value-head":
+        # The value-head wrapper will pick up use_liger_kernel via kwargs (see value_model.py)
+        loading_args["use_liger_kernel"] = True
 
-    model = model_cls.from_pretrained(model_to_load, **loading_args)
+    if model is None:
+        model = model_cls.from_pretrained(model_to_load, **loading_args)
 
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(

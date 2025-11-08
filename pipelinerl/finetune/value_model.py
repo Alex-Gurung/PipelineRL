@@ -6,6 +6,8 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 from typing import Optional, Tuple, Union
 from transformers import AutoModelForCausalLM
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
 from .context import get_accelerator, logger
 
 
@@ -178,9 +180,15 @@ class AutoModelForCausalLMWithValueHead(nn.Module):
         logger.info(f"Loading pretrained model from {pretrained_model_name_or_path}...")
 
         # Load the base model
-        pretrained_model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path, *model_args, **kwargs
-        )
+        use_liger = kwargs.pop("use_liger_kernel", False)
+        if use_liger:
+            pretrained_model = AutoLigerKernelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path, *model_args, **kwargs
+            )
+        else:
+            pretrained_model = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path, *model_args, **kwargs
+            )
 
         # Create the model with value head
         model = cls(pretrained_model)
