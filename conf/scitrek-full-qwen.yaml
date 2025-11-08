@@ -7,9 +7,9 @@ actor:
   rollout_policy: pipelinerl.domains.scitrek.rollouts.generate_scitrek_rollout
   # Encourage boxed final answer to match reward extractor
   # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
-  # Match OpenRLHF-style concurrency: 2 vLLM engines * 2 = 4 rollouts
-  llm_max_rollouts: 2
-  rollout_workers: 2
+  # Match OpenRLHF-style concurrency: 1 vLLM engines * 1 = 1 rollouts
+  llm_max_rollouts: 1
+  rollout_workers: 1
 
 environment: null
 
