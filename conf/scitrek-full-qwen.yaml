@@ -30,17 +30,17 @@ attempts: 16
 
 llm:
   parameters:
-    max_tokens: 8196
+    max_tokens: 2048
     temperature: 1.0
 
 test_llm:
   parameters:
-    max_tokens: 8196
+    max_tokens: 2048
     temperature: 1.0
 
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
-  seq_length: 139268
+  seq_length: 133120
   train_batch_size: 1
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
@@ -58,7 +58,7 @@ vllm_config:
   use_v1: true
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
-    max-model-len: 139268
+    max-model-len: 133120
     gpu-memory-utilization: 0.9
 
 eval_every_n_versions: 256
