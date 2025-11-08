@@ -11,7 +11,7 @@ from tapeagents.llms.trainable import TrainableLLM
 from pipelinerl.async_llm import llm_async_generate, make_training_text
 from pipelinerl.rollouts import BaseMetrics, RolloutResult
 
-COMPILED_REGEX = re.compile(r"\\boxed\{(.*?)\}")
+COMPILED_REGEX = re.compile(r"\\boxed\{([\s\S]*?)\}")
 
 
 def _normalize_text(s: str) -> str:
@@ -93,11 +93,27 @@ async def generate_scitrek_rollout(
     answer = matches[-1] if matches else ""
 
     # Clean spacing like original
-    answer = answer.strip()
-    answer = " ".join(answer.split())
-    answer = ", ".join([tmp.strip() for tmp in answer.split(",")])
+    answer = " ".join(answer.strip().split())
+    items = []
+    for tmp in answer.split(","):
+        tmp = tmp.strip()
+        try:
+            items.append(f"{float(tmp):.3f}")
+        except ValueError:
+            items.append(tmp)
+    answer = ", ".join(items)
 
     gold = str(problem.get("answer", ""))
+    gold = " ".join(gold.strip().split())
+    items = []
+    for tmp in gold.split(","):
+        tmp = tmp.strip()
+        try:
+            items.append(f"{float(tmp):.3f}")
+        except ValueError:
+            items.append(tmp)
+    gold = ", ".join(items)
+    
     em = _exact_match(answer, gold)
     f1 = _f1_score(answer, gold)
     reward = float(em + f1)
