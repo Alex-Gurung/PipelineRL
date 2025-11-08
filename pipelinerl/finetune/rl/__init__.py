@@ -145,18 +145,18 @@ class RLConfig(BaseModel):
     enable_reasoning_distillation: bool = Field(
         default=False,
         description=(
-            "Add KL divergence loss to match π_old(·|short) with π_new(·|long). "
-            "This keeps the model's reasoning consistent across different prompt formats by minimizing "
-            "KL(π_old(·|short) || π_new(·|long)). Helps prevent the model from 'forgetting' the short-prompt "
-            "reasoning style when training on long prompts. "
+            "Add KL divergence loss to keep reasoning consistent across prompt formats. "
+            "Minimizes KL(π_new(·|short) || π_new(·|long)) to ensure the model produces similar "
+            "token distributions regardless of whether it sees short or long prompts. "
+            "This is a consistency loss, not traditional knowledge distillation. "
             "Requires 'messages_long' field in dataset."
         ),
     )
     distillation_coef: float = Field(
         default=0.1,
         description=(
-            "Weight coefficient for the knowledge distillation loss term. "
-            "Final loss includes: distillation_coef * KL(π_old(·|short) || π_new(·|long)). "
+            "Weight coefficient for the reasoning consistency loss term. "
+            "Final loss includes: distillation_coef * KL(π_new(·|short) || π_new(·|long)). "
             "Higher values more strongly enforce consistency between prompt formats."
         ),
     )
@@ -334,6 +334,9 @@ def rl_step(
             T = new_logprobs.shape[1]
             rows = []  # long-context logprobs aligned with short pass positions
 
+            # Collect logits for KD if enabled (only continuation part, aligned with short)
+            logits_rows = [] if config.enable_reasoning_distillation else None
+
             # Validate batch sizes match
             batch_size = batch.input_ids.size(0)
             long_batch_size = ids.size(0)
@@ -396,7 +399,10 @@ def rl_step(
                 out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
                 del pkv
                 logger.info(f"out.logits shape: {out.logits.shape}")
-                lp = F.log_softmax(out.logits[:, :-1, :] / config.temperature, dim=-1)
+
+                # Extract logits (before softmax) for KD if needed
+                continuation_logits = out.logits[:, :-1, :] / config.temperature  # [1, cont_len, vocab]
+                lp = F.log_softmax(continuation_logits, dim=-1)
                 cont_len = lp.shape[1]
                 L = short_targets.shape[0]
                 assert cont_len >= L, (
@@ -419,8 +425,26 @@ def rl_step(
                 row_full = torch.zeros((1, T), device=lp.device, dtype=lp.dtype)
                 row_full[0, mask_indices] = row_vals
                 rows.append(row_full)
+
+                # Collect logits for KD if enabled (aligned with masks)
+                if logits_rows is not None:
+                    # Extract the same last L positions from continuation logits
+                    logits_tail = continuation_logits[:, -L:, :]  # [1, L, vocab]
+                    # Align with short sequence positions using mask_indices
+                    logits_full = torch.zeros((1, T, continuation_logits.size(-1)),
+                                             device=continuation_logits.device,
+                                             dtype=continuation_logits.dtype)
+                    logits_full[0, mask_indices, :] = logits_tail[0]
+                    logits_rows.append(logits_full)
             new_logprobs_long = torch.cat(rows, dim=0)
             assert new_logprobs_long.shape == new_logprobs.shape, "long vs short logprobs length mismatch after align"
+
+            # Assemble logits for KD if collected
+            if logits_rows is not None:
+                logits_long = torch.cat(logits_rows, dim=0)  # [B, T, vocab]
+                assert logits_long.shape[:2] == logits_short.shape[:2], (
+                    f"Long logits shape {logits_long.shape[:2]} doesn't match short logits {logits_short.shape[:2]}"
+                )
 
             # Get long-prompt ref logprobs if available
             if batch.long_prompt_ref_logprobs is not None:
@@ -461,13 +485,10 @@ def rl_step(
         invalid_mask = (group_tokens <= 0) | ~torch.isfinite(group_tokens)
         if invalid_mask.any():
             logger.error(f"Found {invalid_mask.sum().item()} invalid group_tokens values")
-            logger.error(f"group_tokens min: {group_tokens.min()}, max: {group_tokens.max()}, mean: {group_tokens.mean()}")
             logger.error(f"group_tokens unique values: {torch.unique(group_tokens)}")
-            logger.error(f"Batch group_ids: {batch.group_id if hasattr(batch, 'group_id') else 'N/A'}")
             raise ValueError(
                 f"group_tokens must be greater than zero for group normalization. "
-                f"Found {invalid_mask.sum().item()} invalid values. "
-                f"This likely means some groups were completely filtered out during preprocessing."
+                f"Found {invalid_mask.sum().item()} invalid values."
             )
         tokens_weights = torch.ones_like(group_tokens) / group_tokens
     else:

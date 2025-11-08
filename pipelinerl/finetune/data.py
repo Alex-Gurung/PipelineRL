@@ -219,7 +219,6 @@ def collate(
         else:
             # Handle sequence data: pad as usual
             padded_sequences = []
-            pad_value = label_mask_value if k == "labels" or k == "long_prompt_labels" else (0.0 if k in RL_DATA_COLUMNS or k == "long_prompt_ref_logprobs" else 0)
             target_len = long_seq_length if k in long_prompt_keys else seq_length
 
             for seq in seq_list:
@@ -227,6 +226,19 @@ def collate(
                     seq = []  # treat missing as empty and pad
                 elif not isinstance(seq, list):
                     seq = [seq]
+
+                # Determine pad value
+                if k == "labels" or k == "long_prompt_labels":
+                    pad_value = label_mask_value
+                elif k == "group_tokens" or k == "num_labels":
+                    # These fields are constant across the sequence (all elements identical)
+                    # Use the sequence's own value for padding
+                    pad_value = seq[0] if seq and len(seq) > 0 else 0.0
+                elif k in RL_DATA_COLUMNS or k == "long_prompt_ref_logprobs":
+                    pad_value = 0.0
+                else:
+                    pad_value = 0
+
                 padding = [pad_value] * (target_len - len(seq))
                 padded = (seq + padding) if tokenizer.padding_side == "right" else (padding + seq)
                 padded_sequences.append(padded)

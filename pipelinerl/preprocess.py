@@ -99,13 +99,35 @@ def batch_annotate_traces_with_long_prompt_ref_logprobs(llm: TrainableLLM, trace
     completion_token_ids = []
 
     for trace in traces:
-        # Get long prompt tokens from metadata
+        # Get long prompt tokens and labels from metadata
         long_input_ids = trace["metadata"]["long_prompt_input_ids"]
-        # Completion length is same as short prompt
-        completion_length = len(trace["logprobs"])
+        long_labels = trace["metadata"]["long_prompt_labels"]
+
+        # Completion length based on non-masked labels (more robust than backward indexing)
+        completion_length = sum(1 for label in long_labels if label != MASKED_TOKEN_ID)
+        short_completion_length = len(trace["logprobs"])
+
+        # Sanity check: completion lengths should match
+        if completion_length != short_completion_length:
+            logger.warning(
+                f"Long prompt completion length ({completion_length}) doesn't match "
+                f"short prompt completion length ({short_completion_length}). "
+                f"Using short completion length as canonical."
+            )
+            completion_length = short_completion_length
 
         long_prompt_token_ids.append(long_input_ids[:-completion_length])
         completion_token_ids.append(long_input_ids[-completion_length:])
+
+        # Log first trace for debugging
+        if trace == traces[0]:
+            logger.info(
+                f"[First Trace Ref Logprobs]\n"
+                f"  Long input total length: {len(long_input_ids)}\n"
+                f"  Completion length: {completion_length}\n"
+                f"  Prompt length: {len(long_input_ids) - completion_length}\n"
+                f"  First 5 completion tokens: {completion_token_ids[-1][:5]}"
+            )
 
     try:
         all_ref_logprobs = llm.get_batch_logprobs_token_ids(long_prompt_token_ids, completion_token_ids)
