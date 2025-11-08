@@ -165,25 +165,27 @@ def process_long_prompt_metadata(
 
         messages_long = trace["metadata"]["messages_long"]
 
-        # Apply chat template to get long-form text
-        # This matches what's done during rollout generation
-        long_text = tokenizer.apply_chat_template(
-            messages_long,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-        # Get the completion text (same as short prompt)
+        # Get the assistant's output content (raw text without template formatting)
+        # This is the same completion that was generated during rollout
         completion_length = trace.get("n_predicted", 0)
         if completion_length == 0:
             logger.warning(f"Trace has no completion (n_predicted=0), skipping long prompt processing")
             continue
 
-        # Extract completion from the original text
         completion_text = trace["text"][-completion_length:]
 
-        # Combine long prompt with same completion
-        long_full_text = long_text + completion_text
+        # Create full conversation with assistant response, then apply chat template
+        # This ensures consistent tokenization with the short prompt approach
+        full_messages_long = messages_long + [
+            {"role": "assistant", "content": completion_text}
+        ]
+
+        # Apply chat template to the full conversation (prompt + completion)
+        # This matches exactly what's done for short prompts in async_llm.py:182-185
+        long_full_text = tokenizer.apply_chat_template(
+            full_messages_long,
+            tokenize=False,
+        )
 
         # Use long_prompt_seq_length if configured, otherwise fall back to seq_length
         effective_seq_length = (
@@ -201,9 +203,14 @@ def process_long_prompt_metadata(
 
         # Create labels (mask prompt tokens, keep completion tokens)
         # We need to find where the completion starts in the tokenized output
-        # Tokenize just the long prompt to find its length
+        # Tokenize just the long prompt (without assistant response) to find its length
+        long_prompt_text = tokenizer.apply_chat_template(
+            messages_long,
+            tokenize=False,
+            add_generation_prompt=True
+        )
         long_prompt_only = tokenizer(
-            long_text,
+            long_prompt_text,
             return_offsets_mapping=False,
             max_length=effective_seq_length,
             truncation=True,

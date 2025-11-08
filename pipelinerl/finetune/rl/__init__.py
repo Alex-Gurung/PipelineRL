@@ -385,6 +385,8 @@ def rl_step(
                 assert pkv is not None, "past_key_values is None after prefill"
                 # Backprop only through the continuation using the KV cache from the prefill
                 out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
+                del pkv
+                logger.info(f"out.logits shape: {out.logits.shape}")
                 lp = F.log_softmax(out.logits[:, :-1, :] / config.temperature, dim=-1)
                 cont_len = lp.shape[1]
                 L = short_targets.shape[0]
