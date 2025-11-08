@@ -30,12 +30,12 @@ attempts: 16
 
 llm:
   parameters:
-    max_tokens: 16384
+    max_tokens: 8196
     temperature: 1.0
 
 test_llm:
   parameters:
-    max_tokens: 16384
+    max_tokens: 8196
     temperature: 1.0
 
 finetune:
