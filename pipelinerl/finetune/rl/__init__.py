@@ -429,11 +429,12 @@ def rl_step(
                     mask_short = masks_shifted[i]
                     mask_indices = torch.nonzero(mask_short, as_tuple=False).view(-1)
                     L = mask_indices.shape[0]
-                    vec = batch.long_prompt_ref_logprobs[i].to(new_logprobs.device).view(-1)
+                    # Convert to same device and dtype as new_logprobs
+                    vec = batch.long_prompt_ref_logprobs[i].to(device=new_logprobs.device, dtype=new_logprobs.dtype).view(-1)
                     if vec.shape[0] >= L:
                         tail = vec[-L:]
                     else:
-                        pad = torch.zeros(L - vec.shape[0], device=vec.device, dtype=vec.dtype)
+                        pad = torch.zeros(L - vec.shape[0], device=new_logprobs.device, dtype=new_logprobs.dtype)
                         tail = torch.cat([pad, vec])
                     row_full = torch.zeros((1, T), device=new_logprobs.device, dtype=new_logprobs.dtype)
                     row_full[0, mask_indices] = tail
