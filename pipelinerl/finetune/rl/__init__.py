@@ -333,6 +333,16 @@ def rl_step(
             assert lbls is not None, "long_prompt_labels required to derive prompt length"
             T = new_logprobs.shape[1]
             rows = []  # long-context logprobs aligned with short pass positions
+
+            # Log sizes for debugging
+            logger.info(
+                f"[Long Prompt Forward Pass] "
+                f"batch_size={ids.size(0)}, "
+                f"short_seq_len={batch.input_ids.size(1)}, "
+                f"long_seq_len={ids.size(1)}, "
+                f"T={T}"
+            )
+
             for i in range(ids.size(0)):
                 non_mask = torch.nonzero(lbls[i] != -100, as_tuple=False)
                 assert non_mask.numel() > 0, "no non-masked labels found in long_prompt_labels"
@@ -342,6 +352,20 @@ def rl_step(
                 mask_short = masks_shifted[i]
                 mask_indices = torch.nonzero(mask_short, as_tuple=False).view(-1)
                 short_targets = batch.input_ids[i, 1:][mask_short].to(ids.device)
+
+                # Log details for first example in batch
+                if i == 0:
+                    short_prompt_len = (batch.input_ids.size(1) - 1) - mask_short.sum().item()
+                    short_completion_len = short_targets.shape[0]
+                    long_total_len = ids.size(1)
+                    long_completion_len = long_total_len - p
+                    logger.info(
+                        f"[Example 0 Sizes]\n"
+                        f"  Short: prompt={short_prompt_len}, completion={short_completion_len}, total={batch.input_ids.size(1)}\n"
+                        f"  Long:  prompt={p}, completion={long_completion_len}, total={long_total_len}\n"
+                        f"  Short completion tokens (first 5): {short_targets[:5].tolist()}\n"
+                        f"  Long input tokens at completion boundary (5 before, 5 after p={p}): {ids[i, p-5:p+5].tolist()}"
+                    )
                 # Prefill (prompt only) under no_grad with cache to avoid building a graph
                 # Some backends disable cache when gradient checkpointing is on: toggle it just for prefill.
                 under = model.module if hasattr(model, "module") else model
@@ -370,6 +394,16 @@ def rl_step(
                 )
                 tgt = short_targets.view(1, L, 1)
                 row_vals = torch.gather(lp[:, -L:, :], 2, tgt).squeeze(2)
+
+                # Log gathered logprobs for first example
+                if i == 0:
+                    logger.info(
+                        f"[Example 0 Logprobs]\n"
+                        f"  Long continuation length: {cont_len}\n"
+                        f"  Short target length (L): {L}\n"
+                        f"  Using last {L} positions from long continuation\n"
+                        f"  Gathered logprobs (first 5): {row_vals[0, :5].tolist()}"
+                    )
                 assert mask_indices.shape[0] == L, "short mask and targets length mismatch"
                 row_full = torch.zeros((1, T), device=lp.device, dtype=lp.dtype)
                 row_full[0, mask_indices] = row_vals

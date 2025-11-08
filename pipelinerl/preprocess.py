@@ -225,6 +225,25 @@ def process_long_prompt_metadata(
         if "position_ids" in trace:
             trace["metadata"]["long_prompt_position_ids"] = list(range(len(tokenizer_output["input_ids"])))
 
+    # Log size statistics for the first trace as an example
+    if traces:
+        example = traces[0]
+        short_input_len = len(example.get("input_ids", []))
+        short_completion_len = len(example.get("logprobs", []))
+        short_prompt_len = short_input_len - short_completion_len
+
+        if "long_prompt_input_ids" in example.get("metadata", {}):
+            long_input_len = len(example["metadata"]["long_prompt_input_ids"])
+            long_prompt_len = example["metadata"]["long_prompt_labels"].count(MASKED_TOKEN_ID)
+            long_completion_len = long_input_len - long_prompt_len
+
+            logger.info(
+                f"[Size Statistics - First Trace]\n"
+                f"  Short: prompt={short_prompt_len}, completion={short_completion_len}, total={short_input_len}\n"
+                f"  Long:  prompt={long_prompt_len}, completion={long_completion_len}, total={long_input_len}\n"
+                f"  Completion char length: {example.get('n_predicted', 0)}"
+            )
+
     logger.info(f"Completed long prompt processing for {len(traces)} traces")
 
 
