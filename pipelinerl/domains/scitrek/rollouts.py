@@ -92,7 +92,6 @@ async def generate_scitrek_rollout(
     matches = COMPILED_REGEX.findall(content)
     answer = matches[-1] if matches else ""
 
-    # Clean spacing like original
     answer = " ".join(answer.strip().split())
     items = []
     for tmp in answer.split(","):
