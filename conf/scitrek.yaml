@@ -30,22 +30,21 @@ attempts: 16
 
 llm:
   parameters:
-    max_tokens: 3000
+    max_tokens: 16384
     temperature: 1.0
 
 test_llm:
   parameters:
-    # Cap test-time generations to 3000 tokens too
-    max_tokens: 3000
+    max_tokens: 16384
     temperature: 1.0
 
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
-  seq_length: 5000  # Input ~2000 + output 3000 tokens
+  seq_length: 16384
   train_batch_size: 2
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
-  save_checkpoint_steps: 16
+  save_checkpoint_steps: 256
   rl:
     # SciTrek-specific DAPO settings (rewards in range [0, 2] from em+f1)
     clip_ratio_high: 0.3
@@ -54,19 +53,18 @@ finetune:
 
 use_deepspeed: true
 use_fsdp: false
-  # use_fsdp: true 
 
 vllm_config:
   use_v1: true
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
-    max-model-len: 5000
+    max-model-len: 16384
     gpu-memory-utilization: 0.9
 
-eval_every_n_versions: 16
+eval_every_n_versions: 256
 
 wandb:
-  wandb_project_name: scitrek_proxy_qwen_pipelinerl
-  wandb_group: longtune
+  wandb_project_name: longtune
+  wandb_group: scitrek_proxy_qwen_pipelinerl
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
