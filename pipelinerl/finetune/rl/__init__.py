@@ -334,6 +334,15 @@ def rl_step(
             T = new_logprobs.shape[1]
             rows = []  # long-context logprobs aligned with short pass positions
 
+            # Validate batch sizes match
+            batch_size = batch.input_ids.size(0)
+            long_batch_size = ids.size(0)
+            assert batch_size == long_batch_size, (
+                f"Batch size mismatch: short prompt batch has {batch_size} examples "
+                f"but long prompt batch has {long_batch_size} examples. "
+                f"All examples must have both short and long prompts."
+            )
+
             # Log sizes for debugging
             logger.info(
                 f"[Long Prompt Forward Pass] "

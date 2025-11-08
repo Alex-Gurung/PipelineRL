@@ -34,7 +34,7 @@ test_dataset_names:
 # attempts: 16
 # attempts: 8
 attempts: 4
-seq_parallel: 2
+seq_parallel: 1  # Disabled for long-prompt training (packing breaks batch alignment)
 
 llm:
   parameters:
