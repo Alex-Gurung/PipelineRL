@@ -332,12 +332,20 @@ def rl_step(
             # Do NOT count all -100 values (tail padding may also be -100).
             assert lbls is not None, "long_prompt_labels required to derive prompt length"
             T = new_logprobs.shape[1]
-            rows = []
+            rows = []  # long-context logprobs aligned with short pass positions
             for i in range(ids.size(0)):
                 non_mask = torch.nonzero(lbls[i] != -100, as_tuple=False)
                 assert non_mask.numel() > 0, "no non-masked labels found in long_prompt_labels"
                 p = int(non_mask[0].item())
                 assert 0 < p < ids.size(1), f"invalid prompt length {p}"
+                # Use the short completion tokens/mask as canonical targets
+                mask_short = masks_shifted[i]
+                mask_indices = torch.nonzero(mask_short, as_tuple=False).view(-1)
+                short_targets = batch.input_ids[i, 1:][mask_short].to(ids.device)
+                assert short_targets.shape[0] == (ids.size(1) - p), (
+                    "Long prompt must contain the full reasoning trace "
+                    f"(short trace len={short_targets.shape[0]}, long continuation len={ids.size(1) - p})"
+                )
                 # Prefill (prompt only) under no_grad with cache to avoid building a graph
                 # Some backends disable cache when gradient checkpointing is on: toggle it just for prefill.
                 under = model.module if hasattr(model, "module") else model
@@ -358,17 +366,25 @@ def rl_step(
                 # Backprop only through the continuation using the KV cache from the prefill
                 out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
                 lp = F.log_softmax(out.logits[:, :-1, :] / config.temperature, dim=-1)
-                row = torch.gather(lp, 2, ids[i:i+1, p+1:].unsqueeze(2)).squeeze(2)
-                assert row.shape[1] >= T, f"continuation shorter than short completion: {row.shape[1]} < {T}"
-                rows.append(row[:, -T:])
+                cont_len = lp.shape[1]
+                assert cont_len == short_targets.shape[0], (
+                    "Long prompt continuation length differs from short trace "
+                    f"(long={cont_len}, short={short_targets.shape[0]})"
+                )
+                tgt = short_targets.view(1, cont_len, 1)
+                row_vals = torch.gather(lp[:, :cont_len, :], 2, tgt).squeeze(2)
+                assert mask_indices.shape[0] == cont_len, "short mask and targets length mismatch"
+                row_full = torch.zeros((1, T), device=lp.device, dtype=lp.dtype)
+                row_full[0, mask_indices] = row_vals
+                rows.append(row_full)
             new_logprobs_long = torch.cat(rows, dim=0)
             assert new_logprobs_long.shape == new_logprobs.shape, "long vs short logprobs length mismatch after align"
 
             # Get long-prompt ref logprobs if available
             if batch.long_prompt_ref_logprobs is not None:
-                long_prompt_ref_logprobs = batch.long_prompt_ref_logprobs[:, 1:]
-                if long_prompt_ref_logprobs.shape[1] != T:
-                    long_prompt_ref_logprobs = long_prompt_ref_logprobs[:, -T:]
+                vec = batch.long_prompt_ref_logprobs.to(new_logprobs.device)
+                assert vec.shape == (ids.size(0), T), "long_prompt_ref_logprobs must already match short length"
+                long_prompt_ref_logprobs = vec
 
             # Clean up if not needed for KD (we computed only continuation logits)
         else:
