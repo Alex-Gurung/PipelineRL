@@ -326,22 +326,31 @@ def rl_step(
             if hasattr(batch, 'image_grid_thw') and batch.image_grid_thw is not None:
                 model_inputs_long["image_grid_thw"] = batch.image_grid_thw
 
-            outputs_long = model(**model_inputs_long)
-
-            # Compute logits and log-probs for long context
-            logits_long = outputs_long.logits[:, :-1, :] / config.temperature
-            logprobs_long = F.log_softmax(logits_long, dim=-1)
-
-            # Extract log-probs for actual tokens (long context)
-            new_logprobs_long = torch.gather(
-                logprobs_long, dim=2, index=batch.long_prompt_input_ids[:, 1:].unsqueeze(2)
-            ).squeeze(2)
-            # Align long context time dimension with short context for downstream ops
+            # Memory-saving path: no-grad prefill (prompt) + grad on continuation with KV cache
+            ids, attn, lbls = batch.long_prompt_input_ids, batch.long_prompt_attention_mask, batch.long_prompt_labels
+            # We derive prompt length as the index of the first non-masked label.
+            # Do NOT count all -100 values (tail padding may also be -100).
+            assert lbls is not None, "long_prompt_labels required to derive prompt length"
             T = new_logprobs.shape[1]
-            if new_logprobs_long.shape[1] != T:
-                new_logprobs_long = new_logprobs_long[:, -T:]
-                logits_long = logits_long[:, -T:, :]
-            assert torch.isfinite(new_logprobs_long).all(), f"new_logprobs_long is not finite: {new_logprobs_long}"
+            rows = []
+            for i in range(ids.size(0)):
+                non_mask = torch.nonzero(lbls[i] != -100, as_tuple=False)
+                assert non_mask.numel() > 0, "no non-masked labels found in long_prompt_labels"
+                p = int(non_mask[0].item())
+                assert 0 < p < ids.size(1), f"invalid prompt length {p}"
+                # Prefill (prompt only) under no_grad with cache to avoid building a graph
+                with torch.no_grad():
+                    pre = model(input_ids=ids[i:i+1, :p], attention_mask=attn[i:i+1, :p], use_cache=True, return_dict=True)
+                    pkv = getattr(pre, "past_key_values", None)
+                    assert pkv is not None, "past_key_values is None; disable checkpointing or cache for prefill"
+                # Backprop only through the continuation using the KV cache from the prefill
+                out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
+                lp = F.log_softmax(out.logits[:, :-1, :] / config.temperature, dim=-1)
+                row = torch.gather(lp, 2, ids[i:i+1, p+1:].unsqueeze(2)).squeeze(2)
+                assert row.shape[1] >= T, f"continuation shorter than short completion: {row.shape[1]} < {T}"
+                rows.append(row[:, -T:])
+            new_logprobs_long = torch.cat(rows, dim=0)
+            assert new_logprobs_long.shape == new_logprobs.shape, "long vs short logprobs length mismatch after align"
 
             # Get long-prompt ref logprobs if available
             if batch.long_prompt_ref_logprobs is not None:
@@ -349,9 +358,7 @@ def rl_step(
                 if long_prompt_ref_logprobs.shape[1] != T:
                     long_prompt_ref_logprobs = long_prompt_ref_logprobs[:, -T:]
 
-            # Clean up if not needed for KD
-            if not config.enable_reasoning_distillation:
-                del logits_long, logprobs_long
+            # Clean up if not needed for KD (we computed only continuation logits)
         else:
             logger.warning(
                 "Long-prompt features enabled but batch.long_prompt_input_ids is None. "
