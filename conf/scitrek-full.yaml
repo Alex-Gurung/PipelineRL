@@ -8,8 +8,8 @@ actor:
   # Encourage boxed final answer to match reward extractor
   # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
   # Match OpenRLHF-style concurrency: 1 vLLM engines * 4 = 4 rollouts
-  llm_max_rollouts: 4
-  rollout_workers: 1
+  llm_max_rollouts: 2
+  rollout_workers: 2
 
 environment: null
 
