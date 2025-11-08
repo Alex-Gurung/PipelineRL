@@ -205,7 +205,7 @@ def process_long_prompt_metadata(
         long_prompt_only = tokenizer(
             long_text,
             return_offsets_mapping=False,
-            max_length=seq_length,
+            max_length=effective_seq_length,
             truncation=True,
         )
         prompt_token_length = len(long_prompt_only["input_ids"])
@@ -288,6 +288,13 @@ def preprocess_dataset(
     if rl_config and (rl_config.enable_long_prompt_is or
                       rl_config.enable_long_prompt_rl or
                       rl_config.enable_reasoning_distillation):
+        # Ensure messages_long is in metadata (may be at top level from dataset)
+        for entry in data:
+            if "messages_long" not in entry.get("metadata", {}) and "messages_long" in entry:
+                if "metadata" not in entry:
+                    entry["metadata"] = {}
+                entry["metadata"]["messages_long"] = entry["messages_long"]
+
         process_long_prompt_metadata(data, tokenizer, seq_length, rl_config)
 
         # Compute ref logprobs for long prompts

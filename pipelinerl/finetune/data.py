@@ -166,13 +166,35 @@ def collate(
     label_mask_value: int = MASKED_TOKEN_ID,
     pad_to_multiple_of: int = 16,
 ) -> PipelineBatchEncoding:
-    # turn list of dicts with the same keys into a dict of lists
-    example_dict = {key: [example[key] for example in examples] for key in examples[0].keys()}
-    seq_length = max(len(i) for i in example_dict["input_ids"])
+    # Build union of all keys so optional fields (e.g., long-prompt tensors) aren't dropped
+    all_keys = set().union(*[ex.keys() for ex in examples])
+    example_dict = {key: [ex.get(key) for ex in examples] for key in all_keys}
+
+    # Compute seq_length for short prompts
+    seq_length = max(len(i) for i in example_dict["input_ids"] if isinstance(i, list))
     if seq_length % pad_to_multiple_of:
         seq_length += pad_to_multiple_of - (seq_length % pad_to_multiple_of)
+
+    # Compute separate seq_length for long prompts (if present)
+    long_prompt_keys = [
+        "long_prompt_input_ids",
+        "long_prompt_attention_mask",
+        "long_prompt_labels",
+        "long_prompt_position_ids",
+        "long_prompt_ref_logprobs",
+    ]
+    if "long_prompt_input_ids" in example_dict:
+        long_seq_length = max(
+            len(i) for i in example_dict["long_prompt_input_ids"]
+            if isinstance(i, list) and len(i) > 0
+        )
+        if long_seq_length % pad_to_multiple_of:
+            long_seq_length += pad_to_multiple_of - (long_seq_length % pad_to_multiple_of)
+    else:
+        long_seq_length = seq_length
+
     result = {}
-    
+
     # Visual feature fields that should be stacked, not padded
     if "visual_features" in example_dict and isinstance(example_dict["visual_features"][0], dict):
         for k, seq_list in example_dict["visual_features"][0].items():
@@ -183,7 +205,7 @@ def collate(
                 # Other visual fields like pixel_values can be stacked as tensors
                 valid_tensors = [torch.tensor(seq) for seq in seq_list]
                 result[k] = torch.stack(valid_tensors)
-    
+
     for k, seq_list in example_dict.items():
         if k == "model_version":
             continue
@@ -197,18 +219,21 @@ def collate(
         else:
             # Handle sequence data: pad as usual
             padded_sequences = []
-            pad_value = label_mask_value if k == "labels" else (0.0 if k in RL_DATA_COLUMNS else 0)
+            pad_value = label_mask_value if k == "labels" or k == "long_prompt_labels" else (0.0 if k in RL_DATA_COLUMNS or k == "long_prompt_ref_logprobs" else 0)
+            target_len = long_seq_length if k in long_prompt_keys else seq_length
+
             for seq in seq_list:
                 if seq is None:
-                    continue  # Skip None sequences, e.g. visual features when absent
-                if not isinstance(seq, list):
+                    seq = []  # treat missing as empty and pad
+                elif not isinstance(seq, list):
                     seq = [seq]
-                padding = [pad_value] * (seq_length - len(seq))
+                padding = [pad_value] * (target_len - len(seq))
                 padded = (seq + padding) if tokenizer.padding_side == "right" else (padding + seq)
                 padded_sequences.append(padded)
             result[k] = torch.tensor(padded_sequences)
+
     result["model_version"] = min([example.get("model_version", 0) for example in examples])
-    result["is_packed"] = False 
+    result["is_packed"] = False
     return PipelineBatchEncoding(**result)
 
 
@@ -271,7 +296,55 @@ def collate_packed(
 
     extra_tensors = default_data_collator([{k: extra_lists[k] for k in extra_keys}], return_tensors="pt")
 
-    result = {**base_tensors, **extra_tensors}
+    # Pass through long-prompt fields as padded [B, L_long] tensors (not packed)
+    long_prompt_keys = [
+        "long_prompt_input_ids",
+        "long_prompt_attention_mask",
+        "long_prompt_labels",
+        "long_prompt_position_ids",
+        "long_prompt_ref_logprobs",
+    ]
+    long_prompt_batches = {}
+    for key in long_prompt_keys:
+        if any(key in ex for ex in examples):
+            seq_list = [ex.get(key) for ex in examples]
+            # Select pad value and dtype
+            if key == "long_prompt_labels":
+                pad_value = label_pad_value
+                dtype = torch.long
+            elif key == "long_prompt_ref_logprobs":
+                pad_value = 0.0
+                dtype = torch.float
+            else:
+                pad_value = 0
+                dtype = torch.long
+            # Target length for this key
+            target_len = 0
+            for seq in seq_list:
+                if isinstance(seq, list) and len(seq) > target_len:
+                    target_len = len(seq)
+            padded_rows = []
+            for i, seq in enumerate(seq_list):
+                if seq is None:
+                    seq = []
+                elif not isinstance(seq, list):
+                    seq = [seq]
+                # Special case: left-pad long_prompt_ref_logprobs to per-sample long_prompt_labels length
+                if key == "long_prompt_ref_logprobs":
+                    labels_seq = None
+                    if "long_prompt_labels" in examples[i]:
+                        labels_seq = examples[i]["long_prompt_labels"]
+                    if isinstance(labels_seq, list):
+                        row_target = len(labels_seq)
+                        if len(seq) < row_target:
+                            seq = [0.0] * (row_target - len(seq)) + seq
+                pad_count = max(0, target_len - len(seq))
+                pad = [pad_value] * pad_count
+                seq_padded = (seq + pad) if tokenizer.padding_side == "right" else (pad + seq)
+                padded_rows.append(seq_padded)
+            long_prompt_batches[key] = torch.tensor(padded_rows, dtype=dtype)
+
+    result = {**base_tensors, **extra_tensors, **long_prompt_batches}
     result["model_version"] = min([example.get("model_version", 0) for example in examples])
     result["is_packed"] = True 
     result["seq_boundaries"] = seq_boundaries
@@ -294,6 +367,14 @@ def create_dataloader(
     columns = ["input_ids", "labels", "attention_mask"]
     if is_rl:
         columns += RL_DATA_COLUMNS
+        # Preserve long-prompt fields if present (HF Dataset path)
+        columns += [
+            "long_prompt_input_ids",
+            "long_prompt_attention_mask",
+            "long_prompt_labels",
+            "long_prompt_position_ids",
+            "long_prompt_ref_logprobs",
+        ]
 
     logger.info(f"Instantiated preprocess function hash {Hasher.hash(preprocess)}")
     collate_fn = partial(

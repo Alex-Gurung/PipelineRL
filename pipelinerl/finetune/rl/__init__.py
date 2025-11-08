@@ -319,11 +319,18 @@ def rl_step(
             new_logprobs_long = torch.gather(
                 logprobs_long, dim=2, index=batch.long_prompt_input_ids[:, 1:].unsqueeze(2)
             ).squeeze(2)
+            # Align long context time dimension with short context for downstream ops
+            T = new_logprobs.shape[1]
+            if new_logprobs_long.shape[1] != T:
+                new_logprobs_long = new_logprobs_long[:, -T:]
+                logits_long = logits_long[:, -T:, :]
             assert torch.isfinite(new_logprobs_long).all(), f"new_logprobs_long is not finite: {new_logprobs_long}"
 
             # Get long-prompt ref logprobs if available
             if batch.long_prompt_ref_logprobs is not None:
                 long_prompt_ref_logprobs = batch.long_prompt_ref_logprobs[:, 1:]
+                if long_prompt_ref_logprobs.shape[1] != T:
+                    long_prompt_ref_logprobs = long_prompt_ref_logprobs[:, -T:]
 
             # Clean up if not needed for KD
             if not config.enable_reasoning_distillation:
@@ -426,8 +433,11 @@ def rl_step(
     loss = loss * tokens_weights  # 1 x (BxL) x 1
 
     policy_loss_total = -sum_sum(loss, masks_shifted, segments)
+    # Save short-prompt loss for logging
+    policy_loss_short_total = policy_loss_total
 
     # Add long-prompt RL objective if enabled
+    policy_loss_long_total = None
     if config.enable_long_prompt_rl and new_logprobs_long is not None:
         # Compute policy loss for long prompts (using same algorithm)
         log_ratio_new_old_long = new_logprobs_long - old_logprobs
@@ -486,6 +496,7 @@ def rl_step(
         final_loss = policy_loss_total
 
     # Add knowledge distillation loss if enabled
+    kd_loss_value = None
     if config.enable_reasoning_distillation and new_logprobs_long is not None:
         # Use Schulman approximation by default (fast), unless user specifies top_k
         use_schulman = config.distillation_top_k is None
@@ -499,6 +510,7 @@ def rl_step(
             top_k=config.distillation_top_k,
             segments=segments,
         )
+        kd_loss_value = kd_loss.item()
         final_loss = final_loss + config.distillation_coef * kd_loss
 
     # ensure loss is valid
@@ -565,6 +577,14 @@ def rl_step(
         stats["value_mse"] = sum_sum(
             torch.square(value_predictions - value_labels) / num_labels_in_seq, masks_shifted, segments
         ).item()
+
+    # Add multi-prompt training loss components
+    if policy_loss_short_total is not None:
+        stats["policy_loss_short"] = policy_loss_short_total.item()
+    if policy_loss_long_total is not None:
+        stats["policy_loss_long"] = policy_loss_long_total.item()
+    if kd_loss_value is not None:
+        stats["kd_loss"] = kd_loss_value
 
     return final_loss, stats
 
