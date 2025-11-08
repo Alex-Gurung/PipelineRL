@@ -94,11 +94,11 @@ vllm_config:
     trust-remote-code: ""  # required for many Qwen models
     max-model-len: 5000  # Actor vLLM only needs short prompts
     gpu-memory-utilization: 0.9
-  ref_vllm_kwargs:
-    # Reference model needs to support long prompts for computing ref logprobs
-    trust-remote-code: ""
-    max-model-len: 120000  # Must support long_prompt_seq_length
-    gpu-memory-utilization: 0.9
+  # ref_vllm_kwargs:
+  #   # Reference model needs to support long prompts for computing ref logprobs
+  #   trust-remote-code: ""
+  #   max-model-len: 120000  # Must support long_prompt_seq_length
+  #   gpu-memory-utilization: 0.9
 
 eval_every_n_versions: 16
 
