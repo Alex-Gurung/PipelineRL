@@ -65,6 +65,6 @@ eval_every_n_versions: 256
 
 wandb:
   wandb_project_name: longtune
-  wandb_group: scitrek_proxy_qwen_pipelinerl
+  wandb_run_name: scitrek_proxy_qwen_pipelinerl
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
