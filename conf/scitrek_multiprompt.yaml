@@ -85,7 +85,7 @@ finetune:
 
 use_deepspeed: true
 use_fsdp: false
-deepspeed_config: deepspeed_stage2_bf16_cpuoffload
+deepspeed_config: deepspeed_stage3_bf16_cpuoffload
   # use_fsdp: true 
 
 vllm_config:
