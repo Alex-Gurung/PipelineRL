@@ -329,15 +329,6 @@ def collate_packed(
                     seq = []
                 elif not isinstance(seq, list):
                     seq = [seq]
-                # Special case: left-pad long_prompt_ref_logprobs to per-sample long_prompt_labels length
-                if key == "long_prompt_ref_logprobs":
-                    labels_seq = None
-                    if "long_prompt_labels" in examples[i]:
-                        labels_seq = examples[i]["long_prompt_labels"]
-                    if isinstance(labels_seq, list):
-                        row_target = len(labels_seq)
-                        if len(seq) < row_target:
-                            seq = [0.0] * (row_target - len(seq)) + seq
                 pad_count = max(0, target_len - len(seq))
                 pad = [pad_value] * pad_count
                 seq_padded = (seq + pad) if tokenizer.padding_side == "right" else (pad + seq)
