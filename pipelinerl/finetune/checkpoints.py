@@ -16,6 +16,7 @@ from transformers import (
     AutoProcessor,
     BitsAndBytesConfig,
 )
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from transformers.models.auto.modeling_auto import _BaseAutoModelClass
 
 from .context import get_accelerator, logger
@@ -121,7 +122,12 @@ def load_model(args, model_class, current_dir):
         logger.info(f"Initializing model {model_cls} from {args.config_name}")
 
     logger.info(f"Loading args: {loading_args}")
-    
+
+    # Apply Liger kernels for memory-efficient training
+    if model_class == "causal-language-modeling":
+        logger.info("Applying Liger kernels for memory-efficient training")
+        AutoLigerKernelForCausalLM.from_pretrained(model_to_load, **loading_args)
+
     model = model_cls.from_pretrained(model_to_load, **loading_args)
 
     if args.gradient_checkpointing:
