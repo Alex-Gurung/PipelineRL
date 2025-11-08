@@ -70,7 +70,7 @@ finetune:
 
     # Separate sequence length for long prompts (short prompts use seq_length above)
     # Long prompts are ~115k tokens, so set to 120k to allow prompt + 3k completion + buffer
-    long_prompt_seq_length: 120000
+    long_prompt_seq_length: 124000
 
     # Importance sampling correction: π_new(a|long) / π_new(a|short)
     # Corrects distribution mismatch when sampling from short but optimizing for long
