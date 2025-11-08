@@ -339,10 +339,22 @@ def rl_step(
                 p = int(non_mask[0].item())
                 assert 0 < p < ids.size(1), f"invalid prompt length {p}"
                 # Prefill (prompt only) under no_grad with cache to avoid building a graph
-                with torch.no_grad():
-                    pre = model(input_ids=ids[i:i+1, :p], attention_mask=attn[i:i+1, :p], use_cache=True, return_dict=True)
-                    pkv = getattr(pre, "past_key_values", None)
-                    assert pkv is not None, "past_key_values is None; disable checkpointing or cache for prefill"
+                # Some backends disable cache when gradient checkpointing is on: toggle it just for prefill.
+                under = model.module if hasattr(model, "module") else model
+                prev_gc = bool(getattr(under, "is_gradient_checkpointing", False))
+                prev_use_cache = bool(getattr(under.config, "use_cache", False))
+                try:
+                    if prev_gc:
+                        under.gradient_checkpointing_disable()
+                    under.config.use_cache = True
+                    with torch.no_grad():
+                        pre = model(input_ids=ids[i:i+1, :p], attention_mask=attn[i:i+1, :p], use_cache=True, return_dict=True)
+                finally:
+                    under.config.use_cache = prev_use_cache
+                    if prev_gc:
+                        under.gradient_checkpointing_enable()
+                pkv = getattr(pre, "past_key_values", None)
+                assert pkv is not None, "past_key_values is None after prefill"
                 # Backprop only through the continuation using the KV cache from the prefill
                 out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
                 lp = F.log_softmax(out.logits[:, :-1, :] / config.temperature, dim=-1)
