@@ -100,6 +100,6 @@ eval_every_n_versions: 16
 
 wandb:
   wandb_project_name: scitrek_multiprompt_pipelinerl
-  wandb_group: grpo_scitrek_multiprompt_v0
+  wandb_group: grpo_scitrek_multiprompt_v1
 
 model_path: Qwen/Qwen3-4B-Instruct-2507
