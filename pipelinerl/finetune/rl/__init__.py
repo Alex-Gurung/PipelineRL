@@ -256,10 +256,27 @@ def rl_step(
         num_sequences = masks.shape[0]
         segments = None
 
+    # Assert labels align with input_ids (ignoring masked positions)
+    def _assert_labels_align(input_ids: torch.Tensor, labels: torch.Tensor | None, name: str):
+        if labels is None:
+            return
+        assert input_ids.size() == labels.size(), (
+            f"{name}: input_ids shape {tuple(input_ids.size())} != labels shape {tuple(labels.size())}"
+        )
+        mask = labels != -100
+        if torch.any(mask):
+            a = labels[mask]
+            b = input_ids[mask]
+            assert torch.equal(a, b), f"{name}: labels differ from input_ids on unmasked positions"
+
+    _assert_labels_align(batch.input_ids, batch.labels, name="short")
+    if getattr(batch, "long_prompt_input_ids", None) is not None and getattr(batch, "long_prompt_labels", None) is not None:
+        _assert_labels_align(batch.long_prompt_input_ids, batch.long_prompt_labels, name="long")
+
+    # Do not pass labels to model forward to ensure logits are returned by all backends/kernels
     model_inputs = {
         "input_ids": batch.input_ids,
         "attention_mask": batch.attention_mask,
-        "labels": batch.labels,
     }
     if batch.is_packed:
         model_inputs["position_ids"] = batch.position_ids
@@ -298,7 +315,6 @@ def rl_step(
             model_inputs_long = {
                 "input_ids": batch.long_prompt_input_ids,
                 "attention_mask": batch.long_prompt_attention_mask,
-                "labels": batch.long_prompt_labels,
             }
             if batch.is_packed and batch.long_prompt_position_ids is not None:
                 model_inputs_long["position_ids"] = batch.long_prompt_position_ids

@@ -128,7 +128,7 @@ def load_model(args, model_class, current_dir):
     model = None
     if model_class == "causal-language-modeling":
         logger.info("Loading model with Liger kernel enabled (causal-language-modeling)")
-        loading_args["fused_linear_cross_entropy"] = False
+        # loading_args["fused_linear_cross_entropy"] = False
         model = AutoLigerKernelForCausalLM.from_pretrained(model_to_load, **loading_args)
     elif model_class == "causal-language-modeling-with-value-head":
         # The value-head wrapper will pick up use_liger_kernel via kwargs (see value_model.py)
