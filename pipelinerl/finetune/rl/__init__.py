@@ -457,8 +457,18 @@ def rl_step(
     overflow = batch.overflow[:, 1:]
 
     if config.group_normalization:
-        # assert that group_tokens is not zero
-        assert (group_tokens > 0).all(), "group_tokens must be greater than zero for group normalization"
+        # Check for zero or invalid group_tokens
+        invalid_mask = (group_tokens <= 0) | ~torch.isfinite(group_tokens)
+        if invalid_mask.any():
+            logger.error(f"Found {invalid_mask.sum().item()} invalid group_tokens values")
+            logger.error(f"group_tokens min: {group_tokens.min()}, max: {group_tokens.max()}, mean: {group_tokens.mean()}")
+            logger.error(f"group_tokens unique values: {torch.unique(group_tokens)}")
+            logger.error(f"Batch group_ids: {batch.group_id if hasattr(batch, 'group_id') else 'N/A'}")
+            raise ValueError(
+                f"group_tokens must be greater than zero for group normalization. "
+                f"Found {invalid_mask.sum().item()} invalid values. "
+                f"This likely means some groups were completely filtered out during preprocessing."
+            )
         tokens_weights = torch.ones_like(group_tokens) / group_tokens
     else:
         tokens_weights = torch.ones_like(group_tokens) / config.batch_size
