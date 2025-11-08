@@ -32,7 +32,8 @@ test_dataset_names:
 
 
 # attempts: 16
-attempts: 8
+# attempts: 8
+attempts: 4
 
 llm:
   parameters:
