@@ -63,7 +63,6 @@ vllm_config:
   vllm_kwargs:
     dtype: bfloat16
     trust-remote-code: ""  # required for many Qwen models
-    tensor-parallel-size: 4
     max-model-len: 133120
     gpu-memory-utilization: 0.85
 
