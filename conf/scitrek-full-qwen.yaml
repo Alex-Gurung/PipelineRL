@@ -67,6 +67,12 @@ vllm_config:
     max-model-len: 133120
     gpu-memory-utilization: 0.85
 
+world:
+  replicas: 1
+  actor_fraction: 2
+  preprocessor_fraction: 0
+  finetune_fraction: 4
+
 eval_every_n_versions: 256
 
 wandb:
