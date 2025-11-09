@@ -47,7 +47,7 @@ finetune:
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
   save_checkpoint_steps: 256
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   rl:
     # SciTrek-specific DAPO settings (rewards in range [0, 2] from em+f1)
     clip_ratio_high: 0.3
