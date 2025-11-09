@@ -306,7 +306,7 @@ def rl_step(
     if not config.enable_reasoning_distillation:
         del logits_short, logprobs_short
     del probs_short
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     # Long-prompt forward pass if any long-prompt features are enabled
     new_logprobs_long = None
