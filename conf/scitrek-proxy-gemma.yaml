@@ -52,7 +52,7 @@ finetune:
     kl_coef: 0.0  # Disable KL for SciTrek
 
 use_deepspeed: false
-use_fsdp: true
+use_fsdp: false
 
 vllm_config:
   use_v1: true
