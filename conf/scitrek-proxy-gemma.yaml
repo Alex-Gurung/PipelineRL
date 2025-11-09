@@ -51,9 +51,8 @@ finetune:
     dynamic_filtering_reward_range: [0.75, 2.0]
     kl_coef: 0.0  # Disable KL for SciTrek
 
-use_deepspeed: true
-deepspeed_config: deepspeed_stage3_bf16
-use_fsdp: false
+use_deepspeed: false
+use_fsdp: true
 
 vllm_config:
   use_v1: true
