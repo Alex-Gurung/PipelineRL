@@ -40,8 +40,7 @@ test_llm:
 
 finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
-  # seq_length: 133120
-  seq_length: 16384
+  seq_length: 133120
   train_batch_size: 1
   valid_batch_size: 1
   gradient_accumulation_passes: 64
@@ -63,8 +62,7 @@ vllm_config:
   vllm_kwargs:
     dtype: bfloat16
     trust-remote-code: ""  # required for many Qwen models
-    # max-model-len: 133120
-    max-model-len: 16384
+    max-model-len: 133120
     gpu-memory-utilization: 0.6
 
 eval_every_n_versions: 256
