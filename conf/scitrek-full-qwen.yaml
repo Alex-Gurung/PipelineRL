@@ -8,7 +8,7 @@ actor:
   # Encourage boxed final answer to match reward extractor
   # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
   # Match OpenRLHF-style concurrency: rollout_workers vLLM engines * llm_max_rollouts = rollouts
-  llm_max_rollouts: 64
+  llm_max_rollouts: 1
   rollout_workers: 1
 
 environment: null
@@ -45,6 +45,7 @@ finetune:
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
   save_checkpoint_steps: 256
+  gradient_checkpointing: true
   rl:
     # SciTrek-specific DAPO settings (rewards in range [0, 2] from em+f1)
     clip_ratio_high: 0.3
