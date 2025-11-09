@@ -92,12 +92,34 @@ async def generate_scitrek_rollout(
     matches = COMPILED_REGEX.findall(content)
     answer = matches[-1] if matches else ""
 
-    # Clean spacing like original
+    # Clean spacing and normalize numbers
     answer = answer.strip()
     answer = " ".join(answer.split())
-    answer = ", ".join([tmp.strip() for tmp in answer.split(",")])
+    # Normalize each comma-separated element (rounds numbers to 3 decimals)
+    parts = []
+    for tmp in answer.split(","):
+        tmp = tmp.strip()
+        try:
+            num = float(tmp)
+            parts.append(f"{num:.3f}")
+        except ValueError:
+            parts.append(tmp)
+    answer = ", ".join(parts)
 
+    # Apply same normalization to gold answer
     gold = str(problem.get("answer", ""))
+    gold = gold.strip()
+    gold = " ".join(gold.split())
+    gold_parts = []
+    for tmp in gold.split(","):
+        tmp = tmp.strip()
+        try:
+            num = float(tmp)
+            gold_parts.append(f"{num:.3f}")
+        except ValueError:
+            gold_parts.append(tmp)
+    gold = ", ".join(gold_parts)
+    
     em = _exact_match(answer, gold)
     f1 = _f1_score(answer, gold)
     reward = float(em + f1)
