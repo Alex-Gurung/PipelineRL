@@ -42,7 +42,7 @@ finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 133120
   train_batch_size: 1
-  gradient_accumulation_passes: 8
+  gradient_accumulation_passes: 64
   learning_rate: 5e-7
   save_checkpoint_steps: 256
   rl:
