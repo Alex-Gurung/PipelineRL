@@ -108,8 +108,9 @@ class RLConfig(BaseModel):
         default=False,
         description=(
             "Enable importance sampling correction to train on long prompts while sampling from short prompts. "
-            "Applies weight π_ref(a|long)/π_ref(a|short) to correct the distribution mismatch. "
+            "Applies weight π_new(a|long)/π_new(a|short) to correct the distribution mismatch. "
             "Use this when you want a single RL objective but need to correct for the prompt format difference. "
+            "When combined with enable_long_prompt_rl, the same correction is applied to both short and long losses. "
             "Requires 'messages_long' field in dataset."
         ),
     )
@@ -298,6 +299,8 @@ def rl_step(
     # get log probs for actual tokens (short context)
     new_logprobs = torch.gather(logprobs_short, dim=2, index=batch.input_ids[:, 1:].unsqueeze(2)).squeeze(2)
     assert torch.isfinite(new_logprobs).all(), f"new_logprobs is not finite: {new_logprobs}"
+
+    is_weight = None  # Optional IS correction applied to both objectives
 
     # Clean up tensors we don't need to keep
     if not config.enable_reasoning_distillation:
@@ -608,6 +611,8 @@ def rl_step(
 
         # Combine loss components for long prompts
         loss_long = policy_loss_long - kl_coef * approx_kl_long + entropy_bonus_coef * entropy
+        if config.enable_long_prompt_is and is_weight is not None:
+            loss_long = loss_long * is_weight
         loss_long = loss_long * tokens_weights
         policy_loss_long_total = -sum_sum(loss_long, masks_shifted, segments)
 
@@ -636,8 +641,17 @@ def rl_step(
     # Add knowledge distillation loss if enabled
     kd_loss_value = None
     if config.enable_reasoning_distillation and new_logprobs_long is not None:
-        # Use Schulman approximation by default (fast), unless user specifies top_k
-        use_schulman = config.distillation_top_k is None
+        # Use Schulman approximation by default (fast), allow top-k or full vocab overrides
+        top_k_cfg = config.distillation_top_k
+        if top_k_cfg is None:
+            use_schulman = True
+            top_k_value = None
+        elif top_k_cfg == 0:
+            use_schulman = False
+            top_k_value = None  # full vocabulary KL
+        else:
+            use_schulman = False
+            top_k_value = top_k_cfg
         kd_loss = compute_kd_loss(
             logits_short=logits_short,
             logits_long=logits_long,
@@ -645,7 +659,7 @@ def rl_step(
             logprobs_long=new_logprobs_long,
             masks=masks_shifted,
             use_schulman=use_schulman,
-            top_k=config.distillation_top_k,
+            top_k=top_k_value,
             segments=segments,
         )
         kd_loss_value = kd_loss.item()
@@ -755,6 +769,7 @@ def compute_kd_loss(
         use_schulman: If True, use Schulman approximation (fast, default).
                       If False, compute full KL over logits.
         top_k: If set and use_schulman=False, only compute KL over top-k tokens.
+               Pass None (with use_schulman=False) to compute full-vocabulary KL.
                Ignored if use_schulman=True.
         segments: Optional sequence boundaries for packed sequences
 

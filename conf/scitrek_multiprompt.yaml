@@ -31,9 +31,9 @@ test_dataset_names:
   - val
 
 
-# attempts: 16
+attempts: 16
 # attempts: 8
-attempts: 4
+# attempts: 4
 seq_parallel: 1  # Disabled for long-prompt training (packing breaks batch alignment)
 
 llm:
@@ -82,7 +82,7 @@ finetune:
     # Minimizes KL(π_new(·|short) || π_new(·|long))
     enable_reasoning_distillation: false
     distillation_coef: 0.1
-    distillation_top_k: null  # null = fast Schulman approximation, set int for top-k KL
+    distillation_top_k: null  # null = Schulman approx, 0 = full vocab KL, int = top-k KL
 
 use_deepspeed: true
 use_fsdp: false

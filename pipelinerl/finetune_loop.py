@@ -277,6 +277,23 @@ def get_batch_sequence_count(batch: PipelineBatchEncoding):
 
 
 def validate_packing_config(args):
+    rl_cfg = getattr(args, "rl", None)
+    if rl_cfg is not None:
+        multi_prompt_enabled = any(
+            bool(getattr(rl_cfg, flag, False))
+            for flag in ("enable_long_prompt_is", "enable_long_prompt_rl", "enable_reasoning_distillation")
+        )
+        if multi_prompt_enabled:
+            if args.seq_packing:
+                raise ValueError(
+                    "Long-prompt training features require seq_packing=false "
+                    "so short/long sequences remain aligned."
+                )
+            if getattr(args, "seq_parallel", 1) > 1:
+                raise ValueError(
+                    "Long-prompt training features require seq_parallel=1 "
+                    "because packing multiple sequences breaks short/long alignment."
+                )
     if not args.seq_packing:
         return
     if not args.use_flash_attention:
