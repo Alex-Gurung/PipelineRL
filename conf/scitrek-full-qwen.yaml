@@ -60,7 +60,7 @@ vllm_config:
   vllm_kwargs:
     trust-remote-code: ""  # required for many Qwen models
     max-model-len: 133120
-    gpu-memory-utilization: 0.6
+    gpu-memory-utilization: 0.9
 
 eval_every_n_versions: 256
 
