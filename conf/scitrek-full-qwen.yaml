@@ -7,9 +7,9 @@ actor:
   rollout_policy: pipelinerl.domains.scitrek.rollouts.generate_scitrek_rollout
   # Encourage boxed final answer to match reward extractor
   # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
-  # Match OpenRLHF-style concurrency: 1 vLLM engines * 1 = 1 rollouts
+  # Match OpenRLHF-style concurrency: 2 vLLM engines * 1 = 2 rollouts
   llm_max_rollouts: 1
-  rollout_workers: 1
+  rollout_workers: 2
 
 environment: null
 
@@ -42,7 +42,7 @@ finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 133120
   train_batch_size: 1
-  gradient_accumulation_passes: 64
+  gradient_accumulation_passes: 8
   learning_rate: 5e-7
   save_checkpoint_steps: 256
   rl:
