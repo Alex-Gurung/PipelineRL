@@ -42,6 +42,8 @@ finetune:
   # Use DDP by default (no DeepSpeed, no FSDP)
   seq_length: 133120
   train_batch_size: 1
+  valid_batch_size: 1
+  max_train_steps: 5000
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
   save_checkpoint_steps: 256
@@ -59,6 +61,7 @@ use_fsdp: false
 vllm_config:
   use_v1: true
   vllm_kwargs:
+    dtype: bfloat16
     trust-remote-code: ""  # required for many Qwen models
     max-model-len: 133120
     gpu-memory-utilization: 0.9
