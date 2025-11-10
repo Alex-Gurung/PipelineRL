@@ -46,6 +46,7 @@ finetune:
   gradient_accumulation_passes: 64
   learning_rate: 5e-7
   save_checkpoint_steps: 256
+  use_liger_kernel: true
   seq_parallel: 4
   gradient_checkpointing: true
   rl:
