@@ -56,15 +56,15 @@ Training Loss:
 ### 1. Preprocessing
 
 #### Long Prompt Tokenization
-The system tokenizes long prompts by:
-1. Extracting the completion text from the rollout trace
-2. Building the full conversation (long prompt + assistant response)
-3. Applying the chat template to ensure consistent special tokens
-4. Tokenizing with `long_prompt_seq_length` (e.g., 124000 tokens)
-5. Creating labels that mask the prompt and expose only the completion
+The system now tokenizes long prompts by:
+1. Reusing the exact completion token IDs from the rollout (short prompt) so the reasoning trace is identical
+2. Tokenizing only the long prompt portion with `apply_chat_template(..., add_generation_prompt=True)` to obtain the prompt tokens + assistant prefix
+3. Concatenating the prompt tokens with the short completion tokens, trimming the prompt tail if necessary to respect `long_prompt_seq_length`
+4. Creating labels that mask the prompt tokens (`-100`) and expose the reused completion tokens
+5. Storing metadata fields `long_prompt_completion_start` and `long_prompt_completion_length` so downstream code knows where the completion begins inside the long sequence
 
 **Critical Design Decision - Chat Template Consistency**:
-The chat template must be applied to the FULL conversation (including the assistant's response), not just concatenating strings. This ensures the completion tokens include the same special tokens that were present during rollout generation (e.g., `<|im_start|>assistant\n` and `<|im_end|>`). Without this, the completion would be missing 2+ special tokens, causing a mismatch between short and long prompt completions.
+By deriving the assistant response tokens directly from the rollout, the long prompt uses the exact same completion token IDs as the short prompt. Tokenizing only the prompt portion (with `add_generation_prompt=True`) preserves the same special tokens (`<|im_start|>assistant`, `<|im_end|>`, etc.) while guaranteeing that the completion alignment is lossless—no more +2 token drift or template mismatches.
 
 #### Reference Logprobs for Long Prompts
 When computing reference model logprobs:
@@ -114,10 +114,14 @@ The system supports two modes for long-prompt forward passes, controlled by `use
 **Gradient Checkpointing Interaction** (KV cache mode only): Some model backends disable KV caching when gradient checkpointing is enabled. The implementation temporarily disables gradient checkpointing during prefill, then re-enables it for the continuation.
 
 #### Alignment of Short and Long Completions
-The short and long prompts produce the same semantic completion, but may tokenize differently. The system uses the **short completion as canonical**:
-- Extract the last L tokens from the long continuation (where L = length of short completion)
-- Align these with the masked positions in the short sequence
-- This produces `new_logprobs_long` with the same shape as `new_logprobs`
+The short and long prompts now share the exact same completion token IDs (they are copied from the rollout), and preprocessing records the metadata needed to line everything up:
+- `long_prompt_completion_start`: index of the first completion token inside the long sequence
+- `long_prompt_completion_length`: number of completion tokens (identical to the short completion length)
+
+At training time we:
+- Use the precomputed offsets from the short mask to build per-token indices inside the long sequence
+- Gather `logits`/`logprobs` directly with `torch.gather`, producing tensors that already line up with `new_logprobs`
+- (Optional) still run the KV-cache path sample-by-sample, but it now uses the stored start/length instead of searching through labels
 
 **Why alignment is necessary**: Chat templates, tokenization context, and special tokens can cause the same text to tokenize differently. By using short completion token IDs as ground truth and extracting corresponding logprobs from the long context, we maintain consistency.
 
@@ -286,6 +290,7 @@ Each training example must have:
 After preprocessing, each example contains:
 - **Short prompt fields**: `input_ids`, `labels`, `attention_mask`, `logprobs`, `ref_logprobs`
 - **Long prompt fields**: `long_prompt_input_ids`, `long_prompt_labels`, `long_prompt_attention_mask`, `long_prompt_ref_logprobs`
+- **Alignment metadata**: `long_prompt_completion_start`, `long_prompt_completion_length` (index and size of the completion inside the long sequence)
 - **RL metadata**: `advantages`, `group_tokens`, `overflow`, `num_labels`
 
 The labels mask the prompt tokens (-100) and expose only the completion tokens.

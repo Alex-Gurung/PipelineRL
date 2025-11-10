@@ -187,72 +187,63 @@ def process_long_prompt_metadata(
 
         messages_long = trace["metadata"]["messages_long"]
 
-        # Get the assistant's output content (raw text without template formatting)
-        # This is the same completion that was generated during rollout
-        completion_length = trace.get("n_predicted", 0)
-        if completion_length == 0:
-            logger.warning(f"Trace has no completion (n_predicted=0), skipping long prompt processing")
+        short_completion_len = len(trace["logprobs"])
+        if short_completion_len == 0:
+            logger.warning(f"Trace has no completion (len(logprobs)=0), skipping long prompt processing")
             continue
 
-        completion_text = trace["text"][-completion_length:]
+        short_completion_ids = trace["input_ids"][-short_completion_len:]
 
-        # Create full conversation with assistant response, then apply chat template
-        # This ensures consistent tokenization with the short prompt approach
-        full_messages_long = messages_long + [
-            {"role": "assistant", "content": completion_text}
-        ]
-
-        # Apply chat template to the full conversation (prompt + completion)
-        # This matches exactly what's done for short prompts in async_llm.py:182-185
-        long_full_text = tokenizer.apply_chat_template(
-            full_messages_long,
-            tokenize=False,
-        )
-
-        # Use long_prompt_seq_length if configured, otherwise fall back to seq_length
-        effective_seq_length = (
-            rl_config.long_prompt_seq_length if rl_config.long_prompt_seq_length is not None
-            else seq_length
-        )
-
-        # Tokenize the full long-prompt text
-        tokenizer_output = tokenizer(
-            long_full_text,
-            return_offsets_mapping=True,
-            max_length=effective_seq_length,
-            truncation=True,
-        )
-
-        # Create labels (mask prompt tokens, keep completion tokens)
-        # We need to find where the completion starts in the tokenized output
-        # Tokenize just the long prompt (without assistant response) to find its length
-        long_prompt_text = tokenizer.apply_chat_template(
+        # Tokenize only the long prompt portion using the chat template with generation prompt
+        prompt_only_ids = tokenizer.apply_chat_template(
             messages_long,
-            tokenize=False,
-            add_generation_prompt=True
+            tokenize=True,
+            add_generation_prompt=True,
         )
-        long_prompt_only = tokenizer(
-            long_prompt_text,
-            return_offsets_mapping=False,
-            max_length=effective_seq_length,
-            truncation=True,
-        )
-        prompt_token_length = len(long_prompt_only["input_ids"])
+        if isinstance(prompt_only_ids, list):
+            prompt_only_ids_list = prompt_only_ids
+        else:
+            prompt_only_ids_list = prompt_only_ids.tolist()
 
-        # Create labels: -100 for prompt tokens, actual token IDs for completion
+        # Determine maximum sequence length budget for prompt tokens
+        effective_seq_length = rl_config.long_prompt_seq_length if rl_config.long_prompt_seq_length is not None else seq_length
+        if short_completion_len >= effective_seq_length:
+            raise ValueError(
+                f"Completion length {short_completion_len} exceeds configured long prompt length {effective_seq_length}"
+            )
+
+        available_prompt_tokens = effective_seq_length - short_completion_len
+        if len(prompt_only_ids_list) > available_prompt_tokens:
+            # Keep the tail of the prompt to preserve most recent context
+            prompt_tokens_trimmed = prompt_only_ids_list[-available_prompt_tokens:]
+            logger.warning(
+                "Long prompt truncated from %d to %d tokens to fit completion of length %d (max=%d)",
+                len(prompt_only_ids_list),
+                available_prompt_tokens,
+                short_completion_len,
+                effective_seq_length,
+            )
+        else:
+            prompt_tokens_trimmed = prompt_only_ids_list
+
+        long_input_ids = prompt_tokens_trimmed + short_completion_ids
+        attention_mask = [1] * len(long_input_ids)
+        prompt_token_length = len(prompt_tokens_trimmed)
+
         long_labels = (
             [MASKED_TOKEN_ID] * prompt_token_length +
-            tokenizer_output["input_ids"][prompt_token_length:]
+            short_completion_ids
         )
 
-        # Store in metadata with same structure as short prompt
-        trace["metadata"]["long_prompt_input_ids"] = tokenizer_output["input_ids"]
-        trace["metadata"]["long_prompt_attention_mask"] = tokenizer_output["attention_mask"]
+        trace["metadata"]["long_prompt_input_ids"] = long_input_ids
+        trace["metadata"]["long_prompt_attention_mask"] = attention_mask
         trace["metadata"]["long_prompt_labels"] = long_labels
+        trace["metadata"]["long_prompt_completion_start"] = prompt_token_length
+        trace["metadata"]["long_prompt_completion_length"] = short_completion_len
 
         # Also store position_ids if needed for packed sequences
         if "position_ids" in trace:
-            trace["metadata"]["long_prompt_position_ids"] = list(range(len(tokenizer_output["input_ids"])))
+            trace["metadata"]["long_prompt_position_ids"] = list(range(len(long_input_ids)))
 
     # Log size statistics for the first trace as an example
     if traces:
@@ -374,6 +365,10 @@ def preprocess_dataset(
                 entry["long_prompt_position_ids"] = entry["metadata"]["long_prompt_position_ids"]
             if "long_prompt_ref_logprobs" in entry["metadata"]:
                 entry["long_prompt_ref_logprobs"] = entry["metadata"]["long_prompt_ref_logprobs"]
+            if "long_prompt_completion_start" in entry["metadata"]:
+                entry["long_prompt_completion_start"] = entry["metadata"]["long_prompt_completion_start"]
+            if "long_prompt_completion_length" in entry["metadata"]:
+                entry["long_prompt_completion_length"] = entry["metadata"]["long_prompt_completion_length"]
     if not isinstance(tokenizer.eos_token_id, int):
         raise ValueError(f"Tokenizer {tokenizer} does not have an eos_token_id")
     dataset = populate_rl_data(dataset=dataset, eos_token_id=tokenizer.eos_token_id, config=rl_config)
@@ -910,4 +905,3 @@ def run_preprocessing_loop(
                     if worker.is_alive():
                         worker.terminate()
                         worker.join(timeout=1.0)
-

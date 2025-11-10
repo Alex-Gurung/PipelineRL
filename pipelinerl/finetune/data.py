@@ -244,6 +244,19 @@ def collate(
                 padded_sequences.append(padded)
             result[k] = torch.tensor(padded_sequences)
 
+    scalar_long_prompt_keys = ["long_prompt_completion_start", "long_prompt_completion_length"]
+    for key in scalar_long_prompt_keys:
+        if key in example_dict:
+            values = []
+            for val in example_dict[key]:
+                if val is None:
+                    values.append(0)
+                elif isinstance(val, list):
+                    values.append(val[0] if len(val) > 0 else 0)
+                else:
+                    values.append(val)
+            result[key] = torch.tensor(values, dtype=torch.long)
+
     result["model_version"] = min([example.get("model_version", 0) for example in examples])
     result["is_packed"] = False
     return PipelineBatchEncoding(**result)
@@ -348,6 +361,17 @@ def collate_packed(
             long_prompt_batches[key] = torch.tensor(padded_rows, dtype=dtype)
 
     result = {**base_tensors, **extra_tensors, **long_prompt_batches}
+    scalar_long_prompt_keys = ["long_prompt_completion_start", "long_prompt_completion_length"]
+    for key in scalar_long_prompt_keys:
+        if any(key in ex for ex in examples):
+            values = []
+            for ex in examples:
+                val = ex.get(key, 0)
+                if isinstance(val, list):
+                    values.append(val[0] if len(val) > 0 else 0)
+                else:
+                    values.append(val)
+            result[key] = torch.tensor(values, dtype=torch.long)
     result["model_version"] = min([example.get("model_version", 0) for example in examples])
     result["is_packed"] = True 
     result["seq_boundaries"] = seq_boundaries

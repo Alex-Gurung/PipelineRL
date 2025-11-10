@@ -10,6 +10,7 @@ load_as_bf16: True
 use_flash_attention: true
 attn_implementation: flash_attention_2
 auto_device_map: False
+use_liger_kernel: False  # Disable Liger kernel (incompatible with DeepSpeed Stage 3 + Flash Attention)
 #LoRA adapter tuning config
 lora:
   enabled: False

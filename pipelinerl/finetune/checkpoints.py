@@ -18,6 +18,7 @@ from transformers import (
 )
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM  # optional dependency
+from peft import PeftModel
 from transformers.models.auto.modeling_auto import _BaseAutoModelClass
 
 from .context import get_accelerator, logger
@@ -126,13 +127,14 @@ def load_model(args, model_class, current_dir):
 
     # Apply Liger kernel if requested and available
     model = None
-    if model_class == "causal-language-modeling":
+    use_liger = getattr(args, "use_liger_kernel", False)
+    if model_class == "causal-language-modeling" and use_liger:
         logger.info("Loading model with Liger kernel enabled (causal-language-modeling)")
         # loading_args["fused_linear_cross_entropy"] = False
         model = AutoLigerKernelForCausalLM.from_pretrained(model_to_load, **loading_args)
     elif model_class == "causal-language-modeling-with-value-head":
         # The value-head wrapper will pick up use_liger_kernel via kwargs (see value_model.py)
-        loading_args["use_liger_kernel"] = True
+        loading_args["use_liger_kernel"] = use_liger
 
     if model is None:
         model = model_cls.from_pretrained(model_to_load, **loading_args)
@@ -339,7 +341,18 @@ def save_model_only(
 
     unwrapped_model = get_accelerator().unwrap_model(model) if unwrap else model
     logger.info(f"type of unwrapped_model: {type(unwrapped_model)}")
-    
+
+    # Handle LoRA model - PEFT models have their own save_pretrained that only saves adapters
+    if lora and isinstance(unwrapped_model, PeftModel):
+        logger.info("Saving LoRA adapter weights using PEFT save_pretrained")
+        if get_accelerator().is_main_process:
+            unwrapped_model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+        get_accelerator().wait_for_everyone()
+        logger.info(f"Saved LoRA adapter to {output_dir}")
+        return
+    elif lora:
+        logger.warning("LoRA enabled but model is not a PeftModel, saving full model instead")
+
     # Handle value head model
     if isinstance(unwrapped_model, AutoModelForCausalLMWithValueHead):
         logger.info("Saving model with value head")

@@ -359,6 +359,22 @@ def run_finetuning_loop(
     model = load_model(args, args.model_class, current_dir)
     logger.info(f"Model loaded in dtype {model.dtype}")
 
+    # Apply LoRA adapters if enabled (must be done BEFORE accelerator.prepare())
+    if args.lora.enabled:
+        from pipelinerl.finetune.lora import prepare_lora_model, has_lora_checkpoint, lora_load
+        from peft import PeftModel
+
+        # Check if resuming from a LoRA checkpoint
+        if has_lora_checkpoint(current_dir):
+            logger.info(f"Found existing LoRA checkpoint at {current_dir}, loading adapters")
+            model = prepare_lora_model(args.lora, model, args.gradient_checkpointing)
+            lora_load(current_dir, model)
+            logger.info("LoRA adapters loaded from checkpoint")
+        else:
+            logger.info("Applying new LoRA adapters to model")
+            model = prepare_lora_model(args.lora, model, args.gradient_checkpointing)
+            logger.info("LoRA adapters applied successfully")
+
     dt = log_time(dt, time_stats, "finetune/model_load")
 
     data_stream = SingleStreamSpec(
@@ -404,6 +420,12 @@ def run_finetuning_loop(
     logger.info(
         f"Model class is {model.__class__}, optimizer class is {optimizer.__class__}, lr_scheduler class is {lr_scheduler.__class__}"
     )
+
+    # For DeepSpeed ZeRO-3 with LoRA, we need to inform DeepSpeed about frozen parameters
+    if args.lora.enabled and hasattr(model, 'optimizer') and hasattr(model.optimizer, 'quantize_nontrainable_params'):
+        logger.info("Calling DeepSpeed quantize_nontrainable_params for LoRA frozen parameters")
+        model.optimizer.quantize_nontrainable_params()
+        logger.info("DeepSpeed LoRA setup complete")
     if get_accelerator().is_main_process and isinstance(model, FSDP):
         logger.info(f"FSDP internal mixed precision config: {model.mixed_precision}")
     after_dtype = set()

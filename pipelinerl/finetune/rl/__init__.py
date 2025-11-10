@@ -237,6 +237,9 @@ def rl_step(
     # pre-compute masks
     masks = batch.labels != -100
     masks_shifted = masks[:, 1:]
+    completion_offsets = torch.cumsum(masks_shifted.long(), dim=1) - 1
+    completion_offsets = completion_offsets.masked_fill(~masks_shifted, 0)
+    short_completion_lengths = masks_shifted.sum(dim=1).long()
 
     has_value_head = hasattr(model, 'value_head')
 
@@ -347,6 +350,12 @@ def rl_step(
                 f"All examples must have both short and long prompts."
             )
 
+            completion_start_tensor = getattr(batch, "long_prompt_completion_start", None)
+            completion_length_tensor = getattr(batch, "long_prompt_completion_length", None)
+            assert completion_start_tensor is not None and completion_length_tensor is not None, (
+                "Long-prompt metadata missing completion_start or completion_length"
+            )
+
             # Choose between KV cache optimization or standard forward pass
             ids = batch.long_prompt_input_ids
             attn = batch.long_prompt_attention_mask
@@ -375,9 +384,7 @@ def rl_step(
                 )
 
                 for i in range(ids.size(0)):
-                    non_mask = torch.nonzero(lbls[i] != -100, as_tuple=False)
-                    assert non_mask.numel() > 0, "no non-masked labels found in long_prompt_labels"
-                    p = int(non_mask[0].item())
+                    p = int(completion_start_tensor[i].item())
                     assert 0 < p < ids.size(1), f"invalid prompt length {p}"
                     # Use the short completion tokens/mask as canonical targets
                     mask_short = masks_shifted[i]
@@ -385,12 +392,20 @@ def rl_step(
                     short_targets = batch.input_ids[i, 1:][mask_short].to(ids.device)
 
                     # Log details for first example in batch
+                    completion_len_long = int(completion_length_tensor[i].item())
+                    short_len_expected = int(short_completion_lengths[i].item())
+                    if completion_len_long != short_len_expected:
+                        logger.warning(
+                            "Short/long completion length mismatch (short=%d, long=%d)",
+                            short_len_expected,
+                            completion_len_long,
+                        )
                     if i == 0:
                         short_prompt_len = (batch.input_ids.size(1) - 1) - mask_short.sum().item()
                         short_completion_len = short_targets.shape[0]
                         long_total_len = ids.size(1)
                         long_completion_len = long_total_len - p
-                        long_completion_tokens = ids[i, p : p + short_completion_len]
+                        long_completion_tokens = ids[i, p : p + completion_len_long]
                         boundary_slice = ids[i, max(p - 5, 0) : p + 5]
                         logger.info(
                             f"[Example 0 Sizes]\n"
@@ -474,116 +489,49 @@ def rl_step(
                 # Standard forward pass (no KV cache optimization)
                 logger.info("[Long Prompt Forward Pass] Using standard forward pass (no KV cache)")
 
-                # Extract long prompt tensors
-                ids = batch.long_prompt_input_ids
-                attn = batch.long_prompt_attention_mask
-                lbls = batch.long_prompt_labels
-                assert lbls is not None, "long_prompt_labels required for alignment in standard forward pass"
-
                 outputs_long = model(**model_inputs_long)
                 logits_long_full = outputs_long.logits[:, :-1, :] / config.temperature
+                logprobs_long_full = F.log_softmax(logits_long_full, dim=-1)
 
-                T = new_logprobs.shape[1]
-                rows = []
-                logits_rows = [] if config.enable_reasoning_distillation else None
+                shifted_long_ids = batch.long_prompt_input_ids[:, 1:].unsqueeze(2)
+                all_long_logprobs = torch.gather(logprobs_long_full, 2, shifted_long_ids).squeeze(2)
 
-                for i in range(ids.size(0)):
-                    non_mask = torch.nonzero(lbls[i] != -100, as_tuple=False)
-                    assert non_mask.numel() > 0, "no non-masked labels found in long_prompt_labels"
-                    p = int(non_mask[0].item())
-                    assert 0 < p < ids.size(1), f"invalid prompt length {p}"
+                completion_logprob_start = torch.clamp(completion_start_tensor - 1, min=0)
+                max_index = all_long_logprobs.size(1) - 1
+                gather_positions = completion_logprob_start.unsqueeze(1) + completion_offsets
+                gather_positions = torch.clamp(gather_positions, 0, max_index)
 
-                    mask_short = masks_shifted[i]
-                    mask_indices = torch.nonzero(mask_short, as_tuple=False).view(-1)
-                    short_targets = batch.input_ids[i, 1:][mask_short].to(ids.device)
-                    L = short_targets.shape[0]
-                    if L == 0:
-                        # No completion tokens (should not happen, but keep safe)
-                        rows.append(torch.zeros((1, T), device=logits_long_full.device, dtype=logits_long_full.dtype))
-                        if logits_rows is not None:
-                            logits_rows.append(
-                                torch.zeros(
-                                    (1, T, logits_long_full.size(-1)),
-                                    device=logits_long_full.device,
-                                    dtype=logits_long_full.dtype,
-                                )
-                            )
-                        continue
+                gathered_vals = torch.gather(all_long_logprobs, 1, gather_positions)
+                new_logprobs_long = torch.where(masks_shifted, gathered_vals, torch.zeros_like(gathered_vals))
 
-                    continuation_logits = logits_long_full[i:i+1, p-1:, :]
-                    continuation_logprobs = F.log_softmax(continuation_logits, dim=-1)
-                    cont_len = continuation_logprobs.shape[1]
-                    assert cont_len >= L, (
-                        "Long prompt truncated the reasoning trace "
-                        f"(long continuation len={cont_len}, short trace len={L})"
+                if config.enable_reasoning_distillation:
+                    batch_indices = torch.arange(gather_positions.size(0), device=gather_positions.device).unsqueeze(1)
+                    logits_selected = logits_long_full[batch_indices, gather_positions]
+                    logits_long = torch.zeros_like(logits_short)
+                    logits_long = torch.where(masks_shifted.unsqueeze(-1), logits_selected, logits_long)
+
+                if ids.size(0) > 0:
+                    idx0 = 0
+                    mask_short = masks_shifted[idx0]
+                    short_targets = batch.input_ids[idx0, 1:][mask_short].to(ids.device)
+                    p = int(completion_start_tensor[idx0].item())
+                    long_completion_tokens = ids[idx0, p : p + short_targets.shape[0]]
+                    logger.info(
+                        f"[Example 0 Sizes - Standard]\n"
+                        f"  Short completion tokens (first 5): {short_targets[:5].tolist()}\n"
+                        f"  Long completion start index={p}, total={ids.size(1)}\n"
+                        f"  Completion alignment check (first 10 tokens)\n"
+                        f"    short: {short_targets[:10].tolist()}\n"
+                        f"    long : {long_completion_tokens[:10].tolist()}"
                     )
-
-                    tgt = short_targets.view(1, L, 1)
-                    row_vals = torch.gather(continuation_logprobs[:, -L:, :], 2, tgt).squeeze(2)
-
-                    row_full = torch.zeros((1, T), device=continuation_logprobs.device, dtype=continuation_logprobs.dtype)
-                    row_full[0, mask_indices] = row_vals
-                    rows.append(row_full)
-
-                    if logits_rows is not None:
-                        logits_tail = continuation_logits[:, -L:, :]
-                        logits_full_aligned = torch.zeros(
-                            (1, T, continuation_logits.size(-1)),
-                            device=continuation_logits.device,
-                            dtype=continuation_logits.dtype,
-                        )
-                        logits_full_aligned[0, mask_indices, :] = logits_tail[0]
-                        logits_rows.append(logits_full_aligned)
-
-                    if i == 0:
-                        short_prompt_len = (batch.input_ids.size(1) - 1) - mask_short.sum().item()
-                        short_completion_len = short_targets.shape[0]
-                        long_total_len = ids.size(1)
-                        long_completion_len = long_total_len - p
-                        long_completion_tokens = ids[i, p : p + short_completion_len]
-                        logger.info(
-                            f"[Example 0 Sizes - Standard]\n"
-                            f"  Short: prompt={short_prompt_len}, completion={short_completion_len}, total={batch.input_ids.size(1)}\n"
-                            f"  Long:  prompt={p}, completion={long_completion_len}, total={long_total_len}\n"
-                            f"  Short completion tokens (first 5): {short_targets[:5].tolist()}\n"
-                            f"  Long logits slice starts at index {p-1}, continuation len={cont_len}\n"
-                            f"  Completion alignment check (first 10 tokens)\n"
-                            f"    short: {short_targets[:10].tolist()}\n"
-                            f"    long : {long_completion_tokens[:10].tolist()}"
-                        )
-
-                new_logprobs_long = torch.cat(rows, dim=0)
-                assert new_logprobs_long.shape == new_logprobs.shape, "long vs short logprobs length mismatch after align"
-
-                if logits_rows is not None:
-                    logits_long = torch.cat(logits_rows, dim=0)
 
             # Get long-prompt ref logprobs if available
             if batch.long_prompt_ref_logprobs is not None:
-                # Need to define these variables for the ref logprob path
-                if config.use_kv_cache_for_long_prompts:
-                    # Already defined in KV cache branch
-                    pass
-                else:
-                    # Define for standard path
-                    ids = batch.long_prompt_input_ids
-                    T = new_logprobs.shape[1]
-                ref_rows = []
-                for i in range(ids.size(0)):
-                    mask_short = masks_shifted[i]
-                    mask_indices = torch.nonzero(mask_short, as_tuple=False).view(-1)
-                    L = mask_indices.shape[0]
-                    # Convert to same device and dtype as new_logprobs
-                    vec = batch.long_prompt_ref_logprobs[i].to(device=new_logprobs.device, dtype=new_logprobs.dtype).view(-1)
-                    if vec.shape[0] >= L:
-                        tail = vec[-L:]
-                    else:
-                        pad = torch.zeros(L - vec.shape[0], device=new_logprobs.device, dtype=new_logprobs.dtype)
-                        tail = torch.cat([pad, vec])
-                    row_full = torch.zeros((1, T), device=new_logprobs.device, dtype=new_logprobs.dtype)
-                    row_full[0, mask_indices] = tail
-                    ref_rows.append(row_full)
-                long_prompt_ref_logprobs = torch.cat(ref_rows, dim=0)
+                ref_tensor = batch.long_prompt_ref_logprobs.to(device=new_logprobs.device, dtype=new_logprobs.dtype)
+                max_ref_index = ref_tensor.size(1) - 1
+                ref_positions = torch.clamp(completion_offsets, 0, max_ref_index)
+                gathered_refs = torch.gather(ref_tensor, 1, ref_positions)
+                long_prompt_ref_logprobs = torch.where(masks_shifted, gathered_refs, torch.zeros_like(gathered_refs))
 
             # Clean up if not needed for KD (we computed only continuation logits)
         else:
