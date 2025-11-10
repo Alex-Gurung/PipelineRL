@@ -93,7 +93,7 @@ finetune:
 
 use_deepspeed: true
 use_fsdp: false
-deepspeed_config: deepspeed_stage3_bf16_cpuoffload
+# deepspeed_config: deepspeed_stage3_bf16_cpuoffload
   # use_fsdp: true 
 
 vllm_config:
@@ -115,7 +115,7 @@ wandb:
   wandb_group: grpo_scitrek_multiprompt_v1
 
 lora:
-  enabled: False
+  enabled: True
   task_type: CAUSAL_LM # supported: CAUSAL_LM, SEQ_2_SEQ_LM
   base_model_8bit: False # format used for storing base mode weights during forward
   base_model_4bit: False
