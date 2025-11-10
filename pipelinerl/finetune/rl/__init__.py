@@ -474,6 +474,12 @@ def rl_step(
                 # Standard forward pass (no KV cache optimization)
                 logger.info("[Long Prompt Forward Pass] Using standard forward pass (no KV cache)")
 
+                # Extract long prompt tensors
+                ids = batch.long_prompt_input_ids
+                attn = batch.long_prompt_attention_mask
+                lbls = batch.long_prompt_labels
+                assert lbls is not None, "long_prompt_labels required for alignment in standard forward pass"
+
                 outputs_long = model(**model_inputs_long)
                 logits_long_full = outputs_long.logits[:, :-1, :] / config.temperature
 
