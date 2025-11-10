@@ -192,8 +192,11 @@ def rl_step(
     model_inputs = {
         "input_ids": batch.input_ids,
         "attention_mask": batch.attention_mask,
-        "labels": batch.labels,
     }
+    # only include labels if not using liger kernel, because the fused kernel doesn't return logits
+    if not hasattr(model, 'use_liger_kernel') or not model.use_liger_kernel:
+        model_inputs["labels"] = batch.labels
+
     if batch.is_packed:
         model_inputs["position_ids"] = batch.position_ids
     
