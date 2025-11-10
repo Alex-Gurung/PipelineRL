@@ -76,6 +76,7 @@ n_examples: 0 # 0 means do not limit number of samples
 log_each_n_steps: 1
 also_save_steps: []
 use_safetensors: true
+use_liger_kernel: false
 save_final_training_state: True
 seq_parallel: 1
 objective: rl
