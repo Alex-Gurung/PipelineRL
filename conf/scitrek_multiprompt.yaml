@@ -115,7 +115,7 @@ wandb:
   wandb_group: grpo_scitrek_multiprompt_v1
 
 lora:
-  enabled: True
+  enabled: False
   task_type: CAUSAL_LM # supported: CAUSAL_LM, SEQ_2_SEQ_LM
   base_model_8bit: False # format used for storing base mode weights during forward
   base_model_4bit: False
