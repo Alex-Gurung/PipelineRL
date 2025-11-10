@@ -53,7 +53,8 @@ finetune:
   seq_packing: false  # Disabled for long-prompt training (packing breaks batch alignment)
   train_batch_size: 1
   gradient_accumulation_passes: 64
-  learning_rate: 5e-7
+  # learning_rate: 5e-7
+  learning_rate: 5e-6
   save_checkpoint_steps: 16
   rl:
     # SciTrek-specific DAPO settings (rewards in range [0, 2] from em+f1)
@@ -72,6 +73,12 @@ finetune:
     # Separate sequence length for long prompts (short prompts use seq_length above)
     # Long prompts are ~115k tokens, so set to 120k to allow prompt + 3k completion + buffer
     long_prompt_seq_length: 124000
+
+    # KV cache optimization for long-prompt forward pass
+    # When true: splits into no-grad prefill + grad continuation (~100x memory savings)
+    # When false: standard full forward pass (simpler, easier to debug)
+    # Recommended: false for debugging, true for production with >50k token prompts
+    use_kv_cache_for_long_prompts: false
 
     # Importance sampling correction: π_new(a|long) / π_new(a|short)
     # Corrects distribution mismatch when sampling from short but optimizing for long
@@ -106,5 +113,16 @@ eval_every_n_versions: 16
 wandb:
   wandb_project_name: scitrek_multiprompt_pipelinerl
   wandb_group: grpo_scitrek_multiprompt_v1
+
+lora:
+  enabled: True
+  task_type: CAUSAL_LM # supported: CAUSAL_LM, SEQ_2_SEQ_LM
+  base_model_8bit: False # format used for storing base mode weights during forward
+  base_model_4bit: False
+  r: 16 # Lora attention dimension.
+  alpha: 32 # the alpha parameter for Lora scaling.
+  dropout: 0.00 # the dropout probability for Lora layers.
+  bias: "none" # Bias type for Lora. Can be 'none', 'all' or 'lora_only'
+  target_modules: "all-linear" # the names of the modules to apply Lora to.
 
 model_path: Qwen/Qwen3-4B-Instruct-2507

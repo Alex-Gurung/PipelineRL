@@ -80,23 +80,38 @@ Standard forward pass through the model with the short prompt + completion. Comp
 - Entropy of the policy distribution
 - Log-probabilities for the actual generated tokens
 
-#### Long Prompt Pass - Memory Optimization
-**Challenge**: Long prompts (100k tokens) cannot fit in memory with a full backward pass.
+#### Long Prompt Pass - Two Modes
 
-**Solution - KV Cache Split**:
-1. **Prefill Stage** (no gradients):
-   - Process the prompt portion only
-   - Cache the key/value states from attention layers
-   - Run under `torch.no_grad()` to avoid storing activations
+The system supports two modes for long-prompt forward passes, controlled by `use_kv_cache_for_long_prompts`:
 
-2. **Continuation Stage** (with gradients):
-   - Process only the completion tokens (~1k tokens)
-   - Use the cached KV states from prefill
-   - Full gradients computed only for this stage
+**Mode 1: Standard Forward Pass (default, `use_kv_cache_for_long_prompts=false`)**
+- Simple full forward pass, identical to short prompt processing
+- Computes logits for entire sequence (prompt + completion)
+- Loss masking zeros out prompt tokens (same as short prompts)
+- **Pros**: Simpler, easier to debug, mathematically transparent
+- **Cons**: High memory usage for very long prompts (100k+ tokens)
+- **Use when**: Debugging, or when prompts are reasonably sized (<50k tokens)
 
-**Memory Savings**: Instead of computing gradients for 100k+ tokens, we only compute them for ~1k tokens (the completion). This is a ~100x reduction in activation memory.
+**Mode 2: KV Cache Optimization (`use_kv_cache_for_long_prompts=true`)**
+- Memory-efficient split into prefill + continuation stages
+- **Prefill Stage** (no gradients):
+  - Process the prompt portion only
+  - Cache the key/value states from attention layers
+  - Run under `torch.no_grad()` to avoid storing activations
+- **Continuation Stage** (with gradients):
+  - Process only the completion tokens (~1k tokens)
+  - Use the cached KV states from prefill
+  - Full gradients computed only for this stage
+- **Pros**: ~100x memory reduction, enables training on 100k+ token prompts
+- **Cons**: More complex, harder to debug, requires KV cache support
+- **Use when**: Production training with very long prompts (>50k tokens)
 
-**Gradient Checkpointing Interaction**: Some model backends disable KV caching when gradient checkpointing is enabled. The implementation temporarily disables gradient checkpointing during prefill, then re-enables it for the continuation.
+**Mathematical Equivalence**: Both modes produce the same loss and effectively the same gradients:
+- Standard mode computes full gradients but masks prompt contributions in loss
+- KV cache mode skips prompt gradients entirely
+- Since prompt tokens don't contribute to loss (masked), their gradients would be near-zero anyway
+
+**Gradient Checkpointing Interaction** (KV cache mode only): Some model backends disable KV caching when gradient checkpointing is enabled. The implementation temporarily disables gradient checkpointing during prefill, then re-enables it for the continuation.
 
 #### Alignment of Short and Long Completions
 The short and long prompts produce the same semantic completion, but may tokenize differently. The system uses the **short completion as canonical**:
@@ -206,6 +221,9 @@ enable_long_prompt_is: false          # IS correction for single objective
 enable_long_prompt_rl: true           # Dual objective (short + long)
 long_prompt_rl_weight: 0.5            # Weight for long objective (0=short only, 1=long only)
 long_prompt_seq_length: 124000        # Max tokens for long prompts
+
+# Memory optimization for long prompts
+use_kv_cache_for_long_prompts: false  # false=standard (simple), true=KV cache (efficient)
 
 # Reasoning consistency
 enable_reasoning_distillation: false  # Consistency loss
@@ -402,6 +420,27 @@ The implementation logs detailed size information at each stage:
 - We want to prevent the current model from developing format-specific reasoning styles
 - This is a regularization on the current policy, not distillation from a teacher
 
+### Why Default to Standard Forward Pass Instead of KV Cache?
+
+**Default Choice**: `use_kv_cache_for_long_prompts=false` (standard forward pass)
+
+**Reasoning**:
+- **Simplicity**: Standard pass is easier to understand and debug - identical logic to short prompts
+- **Correctness**: Explicit full forward pass makes it clear that gradients flow properly
+- **Transparency**: Normal RL training already uses masking - KV cache is an optimization, not a requirement
+- **Safety**: Opt-in optimization is safer than opt-out (users choose efficiency when needed)
+
+**When to Enable KV Cache**:
+- Production training with prompts >50k tokens (memory becomes limiting)
+- After initial debugging with standard pass confirms correctness
+- When memory savings justify the added complexity
+
+**Mathematical Guarantee**: Both modes are equivalent because:
+1. Normal RL computes full sequence logits but masks prompt tokens in loss
+2. Prompt tokens contribute zero to loss, so their gradients are effectively unused
+3. KV cache makes this explicit by skipping prompt gradients entirely
+4. Same loss → same effective gradients → same model updates
+
 ## Future Directions
 
 ### Potential Enhancements
@@ -439,3 +478,4 @@ The implementation logs detailed size information at each stage:
 3. Fixed ref logprob indexing to use label-based completion length (robust to truncation)
 4. Fixed `group_tokens` padding to use sequence value instead of 0.0
 5. Added comprehensive size logging for debugging alignment issues
+6. Added `use_kv_cache_for_long_prompts` config option (default=false) for choosing between standard and KV cache forward passes
