@@ -104,3 +104,18 @@ rl:
   temperature: ${...llm.parameters.temperature}
   aggregate_loss: sum
   overlong_filtering: false
+  group_objectives:
+    enabled: false
+    group_field: group_id
+    roles:
+      role_path: metadata.role
+      generator_value: generator
+      aggregator_value: aggregator
+      generator_index_path: metadata.generator_index
+      aggregator_subset_path: metadata.leave_out_index
+      aggregator_skip_value: null
+    loo:
+      version: expected_delta
+      score_field: reward
+      min_positive_samples: 1
+    debug_metadata_key: group_objective

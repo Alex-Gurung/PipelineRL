@@ -40,6 +40,7 @@ from pipelinerl.finetune.types import PipelineBatchEncoding, TrainingMetrics
 from pipelinerl.finetune.data import preprocess_fn, collate, collate_packed
 from pipelinerl.finetune.utils import create_sentinel_batch
 from pipelinerl.finetune.rl import RL_DATA_COLUMNS, RLConfig, populate_rl_data
+from pipelinerl.finetune.rl.group_objectives import apply_group_objectives
 import traceback
 from pipelinerl.streams import (
     SingleStreamSpec,
@@ -160,6 +161,8 @@ def preprocess_dataset(
         entry["step_index"] = entry["metadata"]["step_index"]
     if not isinstance(tokenizer.eos_token_id, int):
         raise ValueError(f"Tokenizer {tokenizer} does not have an eos_token_id")
+    if rl_config.group_objectives and rl_config.group_objectives.enabled:
+        dataset = apply_group_objectives(dataset=dataset, config=rl_config.group_objectives)
     dataset = populate_rl_data(dataset=dataset, eos_token_id=tokenizer.eos_token_id, config=rl_config)
     return dataset
 
@@ -694,4 +697,3 @@ def run_preprocessing_loop(
                     if worker.is_alive():
                         worker.terminate()
                         worker.join(timeout=1.0)
-

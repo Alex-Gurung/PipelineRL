@@ -12,6 +12,7 @@ from datasets import Dataset
 from transformers import PreTrainedModel
 from pipelinerl.finetune.types import PipelineBatchEncoding
 
+from .group_objectives import GroupObjectivesConfig
 from .utils import (
     sum_sum,
     mean_sum,
@@ -105,6 +106,10 @@ class RLConfig(BaseModel):
     value_loss_coef: float = Field(
         default=0.0,
         description="Coefficient for the value loss in the final loss",
+    )
+    group_objectives: GroupObjectivesConfig | None = Field(
+        default=None,
+        description="Optional configuration for generator/aggregator grouped objectives.",
     )
 
 

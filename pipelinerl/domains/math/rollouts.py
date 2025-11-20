@@ -34,6 +34,31 @@ def length_penalty(max_length: int, sequence_length: int, buffer_tokens: int) ->
         return ((max_length - buffer_tokens) - sequence_length) / buffer_tokens
     return 0.
 
+
+def reward_from_status(rewards: RewardTable, answer_status: str, finished: bool) -> float:
+    """
+    Map verifier answer status and completion state to a scalar reward.
+    """
+    match (answer_status, finished):
+        case ("wrong", False):
+            return rewards.wrong_answer_not_finished
+        case ("wrong", True):
+            return rewards.wrong_answer_finished
+        case ("no_answer", False):
+            return rewards.no_answer_not_finished
+        case ("no_answer", True):
+            return rewards.no_answer_finished
+        case ("unparsable", False):
+            return rewards.unparsable_not_finished
+        case ("unparsable", True):
+            return rewards.unparsable_finished
+        case ("correct", False):
+            return rewards.correct_answer_not_finished
+        case ("correct", True):
+            return rewards.correct_answer_finished
+        case _:
+            raise ValueError(f"Unknown answer_status/finished combination: {answer_status}/{finished}")
+
 async def generate_math_rollout(
     cfg: DictConfig,
     llm: TrainableLLM,
@@ -69,26 +94,7 @@ async def generate_math_rollout(
     )
 
     trace = make_training_text(llm, llm_call)
-    # Determine reward based on answer status and finished state
-    match (answer_status, trace.finished):
-        case ("wrong", False):
-            reward = rewards.wrong_answer_not_finished
-        case ("wrong", True):
-            reward = rewards.wrong_answer_finished
-        case ("no_answer", False):
-            reward = rewards.no_answer_not_finished
-        case ("no_answer", True):
-            reward = rewards.no_answer_finished
-        case ("unparsable", False):
-            reward = rewards.unparsable_not_finished
-        case ("unparsable", True):
-            reward = rewards.unparsable_finished
-        case ("correct", False):
-            reward = rewards.correct_answer_not_finished
-        case ("correct", True):
-            reward = rewards.correct_answer_finished
-        case _:
-            raise ValueError(f"Invalid answer_status/finished combination: {answer_status}/{trace.finished}")
+    reward = reward_from_status(rewards, answer_status, trace.finished)
 
     # Apply discount factor based on output length
     reward *= discount_factor**llm_call.output_length_tokens

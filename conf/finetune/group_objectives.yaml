@@ -1,0 +1,19 @@
+defaults:
+  - base
+  - _self_
+
+# Configuration specifically for grouped generator/aggregator rollouts.
+# Assumes rollout metadata contains:
+#   - metadata.role: "generator" | "aggregator"
+#   - metadata.generator_index: generator sample index
+#   - metadata.leave_out_index: generator index omitted for this aggregator call
+#   - metadata.aggregator_logprob: scalar score for the aggregator run
+
+rl:
+  group_objectives:
+    enabled: true
+    roles:
+      aggregator_skip_value: -1   # skip aggregator rows corresponding to the full-set evaluation
+    loo:
+      score_field: metadata.aggregator_logprob
+      min_positive_samples: 1

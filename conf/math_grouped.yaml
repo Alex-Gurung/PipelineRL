@@ -1,0 +1,42 @@
+defaults:
+  - base
+  - finetune: group_objectives
+  - _self_
+
+actor:
+  rollout_policy: pipelinerl.domains.math.grouped_rollouts.generate_grouped_math_rollout
+  system_prompt: |
+    You are a careful competition mathematician. Explain your reasoning clearly and finish answers with \boxed{}.
+  task_template: |-
+    Solve the following math problem. Think carefully and finish with a boxed answer.
+
+    {task}
+  generator_group_size: 8
+  generator_attempt_prompt: "Generator attempt #{attempt}: explore a new line of reasoning that could help other solvers."
+  aggregator_system_prompt: |
+    You are an aggregation specialist. Given multiple candidate solutions, decide on the best final answer.
+  aggregator_task_template: |-
+    You are given several responses to the same math problem. Incorporate evidence from the responses to
+    produce the best possible final answer.
+
+    Problem:
+    {task}
+
+    Available generator responses:
+    {responses}
+
+    Produce concise reasoning and end with \boxed{} containing only the final answer.
+
+environment:
+  _target_: pipelinerl.domains.math.MathEnvironment
+
+dataset_loader: pipelinerl.domains.math.load_datasets
+
+train_dataset_names:
+  - open_reasoner_zero_57k
+  - open_reasoner_zero_extended_72k
+
+test_dataset_names:
+  - aime_2024
+  - amc_2023
+  - math_500
