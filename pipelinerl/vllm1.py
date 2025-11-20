@@ -2,7 +2,12 @@ import logging
 import signal
 import torch
 import uvloop
-from vllm.utils import FlexibleArgumentParser, set_ulimit
+import vllm.utils as vllm_utils
+from vllm.utils.system_utils import set_ulimit
+try:
+    FlexibleArgumentParser = vllm_utils.FlexibleArgumentParser
+except AttributeError:
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.entrypoints.openai.cli_args import (
     make_arg_parser,
     validate_parsed_serve_args,
