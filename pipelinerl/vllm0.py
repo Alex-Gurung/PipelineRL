@@ -28,14 +28,17 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
 from vllm._version import version
-from vllm.worker.worker import Worker
+try:
+    from vllm.worker.worker import Worker as _BaseWorker
+    from vllm.worker.multi_step_worker import MultiStepWorker as _BaseMultiStepWorker
+except ImportError:
+    from vllm.v1.worker.gpu_worker import Worker as _BaseWorker
+    _BaseMultiStepWorker = _BaseWorker
 from vllm.executor.multiproc_worker_utils import ProcessWorkerWrapper
 from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sequence import ExecuteModelRequest
 from vllm.usage.usage_lib import UsageContext
-from vllm.worker.multi_step_worker import MultiStepWorker
-from vllm.worker.multi_step_model_runner import MultiStepModelRunner
 
 
 import torch.distributed as dist
@@ -54,7 +57,7 @@ logger.addHandler(handler)
 
 
 def make_worker_class(multi_step: bool):
-    base_class = MultiStepWorker if multi_step else Worker
+    base_class = _BaseMultiStepWorker if multi_step else _BaseWorker
 
     class NewWorkerClass(base_class):
         def init_actor_update_group(
@@ -83,23 +86,37 @@ def make_worker_class(multi_step: bool):
                 world_size=weight_update_group_world_size,
             )
 
+        def _get_weight_update_model(self):
+            runner = getattr(self, "model_runner")
+            if hasattr(runner, "_base_model_runner"):
+                runner = runner._base_model_runner
+            if hasattr(runner, "model") and runner.model is not None:
+                return runner.model
+            if hasattr(runner, "get_model"):
+                model = runner.get_model()
+                if model is not None:
+                    return model
+            raise AssertionError("Unable to locate model on vLLM worker for weight update")
+
         def receive_weight_update(self, request: WeightUpdateRequest):
             torch.cuda.synchronize(self.device)
+            target_model = self._get_weight_update_model()
             for info in request.parameters_info:
                 model_dtype = self.model_config.dtype
                 assert info.dtype == str(model_dtype), (
-                    f"mismatch dtype: src {info.dtype},\ dst {self.model_config.dtype}"
+                    f"mismatch dtype: src {info.dtype},\\ dst {self.model_config.dtype}"
                 )
                 buffer = torch.empty(tuple(info.shape), dtype=model_dtype, device=self.device)
                 torch.distributed.broadcast(buffer, src=0, group=self.process_group)
-                if isinstance(self.model_runner, MultiStepModelRunner):
-                    loaded_params = self.model_runner._base_model_runner.model.load_weights(
-                        weights=[(info.name, buffer)]
-                    )
+                if hasattr(target_model, "load_weights"):
+                    loaded_params = target_model.load_weights(weights=[(info.name, buffer)])
+                    if loaded_params is not None and len(loaded_params) != 1:
+                        raise ValueError(f"model {info.name} not found in model state dict")
                 else:
-                    loaded_params = self.model_runner.model.load_weights(weights=[(info.name, buffer)])
-                if len(loaded_params) != 1:
-                    raise ValueError(f"model {info.name} not found in model state dict")
+                    param = dict(target_model.named_parameters()).get(info.name)
+                    if param is None:
+                        raise ValueError(f"model {info.name} not found in model state dict")
+                    param.data.copy_(buffer)
             logger.info("Weight update received")
 
     return NewWorkerClass
