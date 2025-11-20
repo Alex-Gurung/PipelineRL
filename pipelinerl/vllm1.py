@@ -177,7 +177,7 @@ async def run_server(args, **uvicorn_kwargs) -> None:
         await weight_update_manager.receive_weight_update(request)
         return {"status": "ok"}
 
-    await init_app_state(engine, engine_config, app.state, args)
+    await init_app_state(engine.engine_core, app.state, args)
     shutdown_task = await serve_http(
         app,
         sock,
