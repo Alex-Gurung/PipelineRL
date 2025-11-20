@@ -1,6 +1,6 @@
 defaults:
   - base
-  - finetune: group_objectives
+  - override finetune: group_objectives
   - _self_
 
 actor:
@@ -40,3 +40,13 @@ test_dataset_names:
   - aime_2024
   - amc_2023
   - math_500
+
+rl:
+  policy_loss: ppo
+  epsilon: 0.2
+  clip_ratio_high: 0.3
+  divide_advantage_by_std: true
+  group_normalization: true
+  filter_zero_advantage_groups: false
+  dynamic_filtering_reward_range: [0.0, 1.0]
+  kl_coef: 0.01
