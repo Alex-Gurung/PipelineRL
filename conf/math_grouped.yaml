@@ -41,6 +41,9 @@ test_dataset_names:
   - amc_2023
   - math_500
 
+vllm_config:
+  use_v1: true
+
 rl:
   policy_loss: ppo
   epsilon: 0.2
