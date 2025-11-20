@@ -1,0 +1,77 @@
+# python -m pipelinerl.launch \
+#   --config-name scitrek \
+#   model_path=Qwen/Qwen3-4B-Instruct-2507 \
+#   dataset_loader_params.data_dir=/mnt/disk/sci/scitrek_data finetune.keep_intermediate_checkpoints=false
+
+defaults:
+  - base
+  - finetune/dapo
+  - _self_
+
+actor:
+  rollout_policy: pipelinerl.domains.scitrek.rollouts.generate_scitrek_rollout
+  # Encourage boxed final answer to match reward extractor
+  # system_prompt: Please reason step by step, and put your final answer within \\boxed{}.
+  # Match OpenRLHF-style concurrency: 2 vLLM engines * 64 = 128 rollouts
+  llm_max_rollouts: 64
+  rollout_workers: 2
+
+environment: null
+
+dataset_loader: pipelinerl.domains.scitrek.load_datasets.load_scitrek
+dataset_loader_params:
+  data_dir: null      # e.g., /mnt/disk/sci/scitrek_data
+  train_file: null    # optional explicit override
+  val_file: null      # optional explicit override
+
+train_dataset_names:
+  - train
+
+test_dataset_names:
+  - val
+
+
+attempts: 16
+
+llm:
+  parameters:
+    max_tokens: 3000
+    temperature: 1.0
+
+test_llm:
+  parameters:
+    # Cap test-time generations to 3000 tokens too
+    max_tokens: 3000
+    temperature: 1.0
+
+finetune:
+  # Use DDP by default (no DeepSpeed, no FSDP)
+  seq_length: 5000  # Input ~2000 + output 3000 tokens
+  train_batch_size: 2
+  gradient_accumulation_passes: 64
+  learning_rate: 5e-7
+  save_checkpoint_steps: 16
+  rl:
+    # SciTrek-specific DAPO settings (rewards in range [0, 2] from em+f1)
+    clip_ratio_high: 0.3
+    dynamic_filtering_reward_range: [0.75, 2.0]
+    kl_coef: 0.0  # Disable KL for SciTrek
+
+use_deepspeed: true
+use_fsdp: false
+  # use_fsdp: true 
+
+vllm_config:
+  use_v1: true
+  vllm_kwargs:
+    trust-remote-code: ""  # required for many Qwen models
+    max-model-len: 5000
+    gpu-memory-utilization: 0.9
+
+eval_every_n_versions: 16
+
+wandb:
+  wandb_project_name: scitrek_pipelinerl_gemma
+  wandb_group: grpo_scitrek_gem_v0
+
+model_path: google/gemma-3-4b-it 

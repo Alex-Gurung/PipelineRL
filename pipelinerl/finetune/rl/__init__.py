@@ -400,19 +400,58 @@ def rl_step(
                             short_len_expected,
                             completion_len_long,
                         )
+
+                    # Check and fix alignment between short_targets and long_completion_tokens
+                    # Note: p points to the last prompt token, so actual completion starts at p+1
+                    # This handles edge cases where masks and preprocessing have off-by-one differences
+                    L = short_targets.shape[0]
+                    check_len = min(10, L)
+                    # Completion tokens start at p+1 (p is the last prompt token)
+                    long_completion_tokens = ids[i, p + 1 : p + 1 + L]
+
+                    if check_len > 0 and not torch.equal(short_targets[:check_len], long_completion_tokens[:check_len]):
+                        # Try to find correct alignment with small offsets
+                        original_p = p
+                        aligned = False
+                        for offset in [1, -1, 2, -2, 0]:  # Include 0 to check if the old convention works
+                            test_start = p + 1 + offset
+                            if 0 < test_start < ids.size(1) - L:
+                                test_tokens = ids[i, test_start : test_start + check_len]
+                                if torch.equal(short_targets[:check_len], test_tokens):
+                                    # Adjust p so that p+1 points to the correct completion start
+                                    p = test_start - 1
+                                    long_completion_tokens = ids[i, p + 1 : p + 1 + L]
+                                    aligned = True
+                                    if offset != 0:
+                                        logger.warning(
+                                            f"[Example {i}] Alignment corrected with offset {offset}: "
+                                            f"completion_start {original_p} -> {p}"
+                                        )
+                                    break
+
+                        if not aligned:
+                            logger.error(
+                                f"[Example {i}] Token alignment failed! Cannot find matching offset.\n"
+                                f"  short_targets[:10]: {short_targets[:10].tolist()}\n"
+                                f"  long at p+1={original_p+1}: {ids[i, original_p+1:original_p+11].tolist()}\n"
+                                f"  Boundary tokens (p-5 to p+5): {ids[i, max(0,original_p-5):original_p+5].tolist()}"
+                            )
+
                     if i == 0:
                         short_prompt_len = (batch.input_ids.size(1) - 1) - mask_short.sum().item()
                         short_completion_len = short_targets.shape[0]
                         long_total_len = ids.size(1)
-                        long_completion_len = long_total_len - p
-                        long_completion_tokens = ids[i, p : p + completion_len_long]
-                        boundary_slice = ids[i, max(p - 5, 0) : p + 5]
+                        # p is last prompt token, completion starts at p+1
+                        long_prompt_len = p + 1  # includes the last prompt token
+                        long_completion_len = long_total_len - long_prompt_len
+                        boundary_slice = ids[i, max(p - 4, 0) : p + 6]  # show p-4 to p+5
                         logger.info(
                             f"[Example 0 Sizes]\n"
                             f"  Short: prompt={short_prompt_len}, completion={short_completion_len}, total={batch.input_ids.size(1)}\n"
-                            f"  Long:  prompt={p}, completion={long_completion_len}, total={long_total_len}\n"
+                            f"  Long:  prompt={long_prompt_len}, completion={long_completion_len}, total={long_total_len}\n"
+                            f"  Continuation starts at p={p} (last prompt token), completion at p+1={p+1}\n"
                             f"  Short completion tokens (first 5): {short_targets[:5].tolist()}\n"
-                            f"  Long input tokens at completion boundary (5 before, 5 after p={p}): {boundary_slice.tolist()}\n"
+                            f"  Long input tokens at boundary (p-4 to p+5): {boundary_slice.tolist()}\n"
                             f"  Completion alignment check (first 10 tokens)\n"
                             f"    short: {short_targets[:10].tolist()}\n"
                             f"    long : {long_completion_tokens[:10].tolist()}"
@@ -434,13 +473,22 @@ def rl_step(
                             under.gradient_checkpointing_enable()
                     pkv = getattr(pre, "past_key_values", None)
                     assert pkv is not None, "past_key_values is None after prefill"
+                    del pre  # Free memory from prefill output
+
+                    # Clear cache before continuation to reduce fragmentation
+                    torch.cuda.empty_cache()
+
                     # Backprop only through the continuation using the KV cache from the prefill
                     out = model(input_ids=ids[i:i+1, p:], attention_mask=attn[i:i+1, p:], past_key_values=pkv, use_cache=False, return_dict=True)
-                    del pkv
+                    del pkv  # Free KV cache immediately after use
+                    torch.cuda.empty_cache()
+
                     logger.info(f"out.logits shape: {out.logits.shape}")
 
                     # Extract logits (before softmax) for KD if needed
                     continuation_logits = out.logits[:, :-1, :] / config.temperature  # [1, cont_len, vocab]
+                    del out  # Free model output immediately
+
                     lp = F.log_softmax(continuation_logits, dim=-1)
                     cont_len = lp.shape[1]
                     L = short_targets.shape[0]
@@ -450,6 +498,7 @@ def rl_step(
                     )
                     tgt = short_targets.view(1, L, 1)
                     row_vals = torch.gather(lp[:, -L:, :], 2, tgt).squeeze(2)
+                    del lp  # Free log_softmax output after gathering
 
                     # Log gathered logprobs for first example
                     if i == 0:
@@ -461,7 +510,7 @@ def rl_step(
                             f"  Gathered logprobs (first 5): {row_vals[0, :5].tolist()}"
                         )
                     assert mask_indices.shape[0] == L, "short mask and targets length mismatch"
-                    row_full = torch.zeros((1, T), device=lp.device, dtype=lp.dtype)
+                    row_full = torch.zeros((1, T), device=row_vals.device, dtype=row_vals.dtype)
                     row_full[0, mask_indices] = row_vals
                     rows.append(row_full)
 
@@ -475,6 +524,10 @@ def rl_step(
                                                  dtype=continuation_logits.dtype)
                         logits_full[0, mask_indices, :] = logits_tail[0]
                         logits_rows.append(logits_full)
+
+                    # Free continuation logits after extracting what we need
+                    del continuation_logits
+                    torch.cuda.empty_cache()
                 new_logprobs_long = torch.cat(rows, dim=0)
                 assert new_logprobs_long.shape == new_logprobs.shape, "long vs short logprobs length mismatch after align"
 
@@ -496,7 +549,9 @@ def rl_step(
                 shifted_long_ids = batch.long_prompt_input_ids[:, 1:].unsqueeze(2)
                 all_long_logprobs = torch.gather(logprobs_long_full, 2, shifted_long_ids).squeeze(2)
 
-                completion_logprob_start = torch.clamp(completion_start_tensor - 1, min=0)
+                # completion_start_tensor now points to last prompt token (which predicts first completion)
+                # So use it directly as the logprob start position
+                completion_logprob_start = torch.clamp(completion_start_tensor, min=0)
                 max_index = all_long_logprobs.size(1) - 1
                 gather_positions = completion_logprob_start.unsqueeze(1) + completion_offsets
                 gather_positions = torch.clamp(gather_positions, 0, max_index)
@@ -515,11 +570,12 @@ def rl_step(
                     mask_short = masks_shifted[idx0]
                     short_targets = batch.input_ids[idx0, 1:][mask_short].to(ids.device)
                     p = int(completion_start_tensor[idx0].item())
-                    long_completion_tokens = ids[idx0, p : p + short_targets.shape[0]]
+                    # p is last prompt token, completion starts at p+1
+                    long_completion_tokens = ids[idx0, p + 1 : p + 1 + short_targets.shape[0]]
                     logger.info(
                         f"[Example 0 Sizes - Standard]\n"
                         f"  Short completion tokens (first 5): {short_targets[:5].tolist()}\n"
-                        f"  Long completion start index={p}, total={ids.size(1)}\n"
+                        f"  Continuation start p={p}, completion at p+1={p+1}, total={ids.size(1)}\n"
                         f"  Completion alignment check (first 10 tokens)\n"
                         f"    short: {short_targets[:10].tolist()}\n"
                         f"    long : {long_completion_tokens[:10].tolist()}"
@@ -817,8 +873,12 @@ def compute_kd_loss(
     segments: list[tuple[int, int]] | None = None,
 ) -> torch.Tensor:
     """
-    Compute knowledge distillation loss KL(π_short || π_long) to keep reasoning consistent
-    across different prompt formats.
+    Compute knowledge distillation loss KL(π_long || π_short) to transfer good behavior
+    from short prompts to long prompts.
+
+    Short prompts are the "teacher" (sampled, get rewards) and long prompts are the "student"
+    (should produce the same outputs). We use reverse KL so long learns short's mode.
+    Stop gradient on short since it's the target.
 
     Supports three modes:
     1. Schulman approximation (default): Fast approximation using selected token log-probs
@@ -843,22 +903,28 @@ def compute_kd_loss(
     """
     if use_schulman:
         # Schulman approximation: KL ≈ exp(log_ratio) - log_ratio - 1
-        # where log_ratio = log(π_short) - log(π_long)
-        log_ratio = logprobs_short - logprobs_long
+        # KL(π_long || π_short): log_ratio = log(π_long) - log(π_short)
+        # Stop gradient on short (teacher/target)
+        log_ratio = logprobs_long - logprobs_short.detach()
         kl = torch.exp(log_ratio) - log_ratio - 1  # [B, L]
     elif top_k is not None:
-        # Top-k KL: Renormalize within top-k tokens from short context
-        topk_values_short, topk_indices = torch.topk(logits_short, top_k, dim=-1)  # [B, L, k]
+        # Top-k KL: KL(π_long || π_short)
+        # Use short's top-k indices, stop gradient on short (teacher)
+        logits_short_detached = logits_short.detach()
+        topk_values_short, topk_indices = torch.topk(logits_short_detached, top_k, dim=-1)  # [B, L, k]
         logits_long_topk = torch.gather(logits_long, dim=-1, index=topk_indices)  # [B, L, k]
 
-        log_p_topk = F.log_softmax(topk_values_short, dim=-1)
-        log_q_topk = F.log_softmax(logits_long_topk, dim=-1)
+        # P is long (student), Q is short (teacher/target)
+        log_p_topk = F.log_softmax(logits_long_topk, dim=-1)
+        log_q_topk = F.log_softmax(topk_values_short, dim=-1)
 
+        # KL(P || Q) = sum(P * (log_P - log_Q))
         kl = F.kl_div(log_q_topk, log_p_topk, log_target=True, reduction='none').sum(dim=-1)  # [B, L]
     else:
-        # Full vocabulary KL: KL(P || Q) = sum(P * (log_P - log_Q))
-        log_p = F.log_softmax(logits_short, dim=-1)
-        log_q = F.log_softmax(logits_long, dim=-1)
+        # Full vocabulary KL: KL(π_long || π_short)
+        # Stop gradient on short (teacher)
+        log_p = F.log_softmax(logits_long, dim=-1)
+        log_q = F.log_softmax(logits_short.detach(), dim=-1)
         # F.kl_div expects log_q as input, log_p as target
         kl = F.kl_div(log_q, log_p, log_target=True, reduction='none').sum(dim=-1)  # [B, L]
 

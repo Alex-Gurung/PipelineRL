@@ -187,11 +187,25 @@ def process_long_prompt_metadata(
 
         messages_long = trace["metadata"]["messages_long"]
 
-        short_completion_len = len(trace["logprobs"])
+        # Count actual completion tokens from labels (robust to tokenizer differences)
+        # Labels has -100 (MASKED_TOKEN_ID) for prompt tokens and actual token IDs for completion
+        short_completion_len = sum(1 for label in trace.get("labels", []) if label != MASKED_TOKEN_ID)
+
+        # Debug logging for first trace to diagnose any mismatches
+        if trace == traces[0]:
+            logger.info(f"[Debug] Trace completion length analysis:")
+            logger.info(f"  len(logprobs) = {len(trace.get('logprobs', []))}")
+            logger.info(f"  len(input_ids) = {len(trace.get('input_ids', []))}")
+            logger.info(f"  len(labels) = {len(trace.get('labels', []))}")
+            logger.info(f"  non-masked labels (actual completion) = {short_completion_len}")
+            logger.info(f"  Last 10 input_ids: {trace.get('input_ids', [])[-10:]}")
+            logger.info(f"  Last 10 labels: {trace.get('labels', [])[-10:]}")
+
         if short_completion_len == 0:
-            logger.warning(f"Trace has no completion (len(logprobs)=0), skipping long prompt processing")
+            logger.warning(f"Trace has no completion (labels are all masked), skipping long prompt processing")
             continue
 
+        # Extract only the actual completion tokens
         short_completion_ids = trace["input_ids"][-short_completion_len:]
 
         # Tokenize only the long prompt portion using the chat template with generation prompt
@@ -230,6 +244,14 @@ def process_long_prompt_metadata(
         attention_mask = [1] * len(long_input_ids)
         prompt_token_length = len(prompt_tokens_trimmed)
 
+        # Validate prompt has at least one token
+        if prompt_token_length < 1:
+            raise ValueError(
+                f"Long prompt has no tokens after tokenization. "
+                f"messages_long may be empty or the chat template failed."
+            )
+
+        # Labels: mask the prompt, keep completion tokens
         long_labels = (
             [MASKED_TOKEN_ID] * prompt_token_length +
             short_completion_ids
@@ -238,7 +260,12 @@ def process_long_prompt_metadata(
         trace["metadata"]["long_prompt_input_ids"] = long_input_ids
         trace["metadata"]["long_prompt_attention_mask"] = attention_mask
         trace["metadata"]["long_prompt_labels"] = long_labels
-        trace["metadata"]["long_prompt_completion_start"] = prompt_token_length
+        # completion_start points to the last prompt token (which predicts first completion token)
+        # This ensures the KV cache continuation produces enough logprobs
+        # Continuation: ids[p:] = [last_prompt_token, c0, c1, ..., cm-1] has m+1 tokens
+        # After forward and [:, :-1, :], we get m logprobs for c0, c1, ..., cm-1
+        trace["metadata"]["long_prompt_completion_start"] = prompt_token_length - 1
+        # completion_length is the actual completion token count
         trace["metadata"]["long_prompt_completion_length"] = short_completion_len
 
         # Also store position_ids if needed for packed sequences
@@ -267,40 +294,38 @@ def process_long_prompt_metadata(
     logger.info(f"Completed long prompt processing for {len(traces)} traces")
 
 
-def replace_oov_tokens_with_the(data: list[dict], tokenizer: transformers.PreTrainedTokenizerBase) -> list[dict]:
-    patched_entries = 0
+def filter_oov_tokens(data: list[dict], tokenizer: transformers.PreTrainedTokenizerBase) -> list[dict]:
+    """Filter out entries with out-of-vocabulary tokens instead of patching them."""
+    skipped_entries = 0
 
-    # TODO: yes this is slow. But should not be the bottleneck. We have to pickle the entire tokenizer
-    # every time we sent a task to the process pool anyway.
+    # Get all valid token IDs from tokenizer
     token_ids = set(tokenizer.get_vocab().values())
-    the_token_id = tokenizer.get_vocab()["the"]
+
+    # Also add special token IDs that may not be in get_vocab()
+    if hasattr(tokenizer, 'all_special_ids'):
+        token_ids.update(tokenizer.all_special_ids)
+
+    # Add any additional special tokens
+    for attr in ['bos_token_id', 'eos_token_id', 'pad_token_id', 'unk_token_id']:
+        token_id = getattr(tokenizer, attr, None)
+        if token_id is not None:
+            token_ids.add(token_id)
 
     new_data = []
     for entry in data:
-        new_input_ids = []
         invalid_token_ids = []
         for token_id in entry["input_ids"]:
             if token_id not in token_ids:
-                new_input_ids.append(the_token_id)
                 invalid_token_ids.append(token_id)
-            else:
-                new_input_ids.append(token_id)
-        if invalid_token_ids:
-            patched_entries += 1
-            logger.warning(f"Patching entry with invalid token ids: {invalid_token_ids}")
-            # Also need to update logprobs if they exist since we're changing tokens
-            if "logprobs" in entry and len(entry["logprobs"]) > 0:
-                # Find positions of invalid tokens in the completion part
-                completion_length = len(entry["logprobs"])
-                completion_start = len(entry["input_ids"]) - completion_length
-                for i, token_id in enumerate(invalid_token_ids):
-                    if i + completion_start < len(entry["input_ids"]):
-                        logger.warning("Invalid token in completion part, logprobs may be inconsistent")
-        entry["input_ids"] = new_input_ids
-        new_data.append(entry)
 
-    if patched_entries > 0:
-        logger.warning(f"Patched {patched_entries} entries with invalid token ids from {len(data)}")
+        if invalid_token_ids:
+            skipped_entries += 1
+            logger.warning(f"Skipping entry with invalid token ids: {invalid_token_ids}")
+        else:
+            new_data.append(entry)
+
+    if skipped_entries > 0:
+        logger.warning(f"Skipped {skipped_entries} entries with invalid token ids from {len(data)}")
 
     return new_data
 
@@ -314,7 +339,7 @@ def preprocess_dataset(
 ) -> list[dict]:
     preprocess = partial(preprocess_fn, seq_length=seq_length, tokenizer=tokenizer, is_rl=True)
 
-    data = replace_oov_tokens_with_the(data, tokenizer)
+    data = filter_oov_tokens(data, tokenizer)
 
     # inplace update of the traces with ref logprobs
     if llm is not None:
