@@ -77,6 +77,7 @@ n_examples: 0 # 0 means do not limit number of samples
 log_each_n_steps: 1
 also_save_steps: []
 use_safetensors: true
+use_liger_kernel: false
 save_final_training_state: True
 seq_parallel: 1
 objective: rl
@@ -88,7 +89,7 @@ weight_update_interval: 1
 pop_old_data: ${..pop_old_data}
 attempts: 8
 eval_callback:
-  _target_: tapeagents.finetune.eval.dummy_eval_callback
+  _target_: pipelinerl.finetune.utils.dummy_eval_callback
   config_name: ""
 rl:
   policy_loss: reinforce
@@ -97,7 +98,8 @@ rl:
   final_kl_coef: ${..rl.kl_coef} 
   entropy_bonus: 0.0
   reward_minus_kl_coef: 0.0
-  epsilon: 4
+  epsilon_low: 2e-2
+  epsilon_high: 2e-2
   use_advantages: true
   relu_log_p_weights: false
   clamp_log_ratio_ref_new_value: 5

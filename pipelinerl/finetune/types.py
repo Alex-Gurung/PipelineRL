@@ -53,6 +53,8 @@ class PipelineBatchEncoding(BaseModel):
     attention_mask: torch.LongTensor
     labels: torch.LongTensor
     position_ids: torch.LongTensor | None = None  # Required when seq_packing=True
+    # Unique per-token segment identifier (e.g., original sequence id when packed)
+    segment_ids: torch.LongTensor | None = None
     
     rewards: torch.FloatTensor
     advantages: torch.FloatTensor
@@ -81,7 +83,7 @@ class PipelineBatchEncoding(BaseModel):
     long_prompt_completion_start: torch.LongTensor | None = None
     long_prompt_completion_length: torch.LongTensor | None = None
 
-    @field_validator('input_ids', 'attention_mask', 'labels', 'position_ids', 'image_grid_thw',
+    @field_validator('input_ids', 'attention_mask', 'labels', 'position_ids', 'image_grid_thw', 'segment_ids',
                      'long_prompt_input_ids', 'long_prompt_attention_mask', 'long_prompt_labels',
                      'long_prompt_position_ids', 'long_prompt_completion_start', 'long_prompt_completion_length',
                      mode='before')
@@ -169,6 +171,7 @@ class PipelineBatchEncoding(BaseModel):
                 "attention_mask": self.attention_mask[:, bs[i]:bs[i + 1]],
                 "labels": self.labels[:, bs[i]:bs[i + 1]],
                 "position_ids": self.position_ids[:, bs[i]:bs[i + 1]] if self.position_ids is not None else None,
+                "segment_ids": self.segment_ids[:, bs[i]:bs[i + 1]] if self.segment_ids is not None else None,
                 "rewards": self.rewards[:, bs[i]:bs[i + 1]],
                 "advantages": self.advantages[:, bs[i]:bs[i + 1]],
                 "ref_logprobs": self.ref_logprobs[:, bs[i]:bs[i + 1]],

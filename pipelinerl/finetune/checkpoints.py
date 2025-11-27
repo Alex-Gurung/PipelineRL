@@ -20,6 +20,7 @@ from transformers import (
 from liger_kernel.transformers import AutoLigerKernelForCausalLM  # optional dependency
 from peft import PeftModel
 from transformers.models.auto.modeling_auto import _BaseAutoModelClass
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 from .context import get_accelerator, logger
 from .lora import has_lora_checkpoint, lora_load, lora_save, prepare_lora_model
@@ -34,11 +35,15 @@ def is_deepspeed_model(model) -> bool:
 
 def get_auto_model_class(
     model_class: ModelClass,
+    use_liger_kernel: bool = False,
 ) -> Type[_BaseAutoModelClass]:
     """Get the AutoModel class corresponding to the model class."""
     match model_class:
         case "causal-language-modeling":
-            return AutoModelForCausalLM
+            if use_liger_kernel:
+                return AutoLigerKernelForCausalLM
+            else:
+                return AutoModelForCausalLM
         case "causal-language-modeling-with-value-head":
             return AutoModelForCausalLMWithValueHead
         case "seq2seq-language-modeling":
@@ -109,7 +114,7 @@ def load_model(args, model_class, current_dir):
         loading_args["torch_dtype"] = torch.bfloat16
     if args.auto_device_map:
         loading_args["device_map"] = "auto"
-    model_cls = get_auto_model_class(model_class)
+    model_cls = get_auto_model_class(model_class, args.use_liger_kernel)
     if (
         os.path.exists(current_dir / "pytorch_model.bin")
         or os.path.exists(current_dir / "model.safetensors")
